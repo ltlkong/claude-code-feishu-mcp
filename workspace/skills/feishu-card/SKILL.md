@@ -194,6 +194,8 @@ Batches all inputs into one callback:
 
 Use the `chart` tag with a VChart spec in `chart_spec`. Supported types: line, bar, pie, area, scatter, radar, funnel, word cloud, progress.
 
+**CRITICAL: `yField` / `valueField` values MUST be numbers, not strings.** VChart silently renders empty charts if data values are strings like `"30-40%"`. For range data, pick a representative number (max or midpoint). Always verify data types before sending.
+
 ### Line Chart
 ```json
 {
