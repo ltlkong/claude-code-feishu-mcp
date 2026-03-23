@@ -1,0 +1,20 @@
+[Unit]
+Description=Feishu Claude Code Bot (MCP Server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/feishu-claude-code
+ExecStart=/usr/local/bin/claude --dangerously-skip-permissions
+Restart=always
+RestartSec=10
+
+EnvironmentFile=/path/to/feishu-claude-code/.env
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
