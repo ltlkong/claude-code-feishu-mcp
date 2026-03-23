@@ -251,11 +251,12 @@ python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
 
 **Delivery via Feishu:**
 
-- **Default:** Split into 2 parts:
-  1. **Executive summary card** — Feishu V2 card with key findings + 1-2 charts (market size, adoption rate, etc.)
-  2. **Full report** — `reply(request_id, report_text)` with markdown. All sources as clickable links.
-- **For data-heavy reports:** Add charts inline using the `chart` tag in Feishu V2 card JSON.
-- **PDF/DOCX/XLSX:** Generate with the appropriate skill, save to `/tmp/`, then `reply_file(chat_id, file_path)`.
+**CRITICAL: `reply()` can only be called ONCE per request_id — it finalizes the card. Never plan a delivery that requires multiple `reply()` calls to the same request_id. Everything must go in ONE reply.**
+
+- **Default (markdown with charts):** Build a single Feishu V2 card JSON containing ALL content — key findings, charts, detailed analysis, and sources — then send via one `reply(request_id, card_json)`. Use collapsible panels (`collapsible_panel`) to keep long reports manageable within a single card.
+- **If the report exceeds 28KB card limit:** Use `reply(request_id, full_markdown_text)` as plain markdown (no card). Charts can be generated as images via matplotlib and sent separately via `reply_file`.
+- **PDF/DOCX/XLSX:** Generate with the appropriate skill, save to `/tmp/`, use `update_status` for progress, then `reply(request_id, summary_text)` + `reply_file(chat_id, file_path)` for the file. The reply should contain a brief summary; the file has the full report.
+- **Splitting is OK** (e.g. reply with summary + reply_file with full report). But plan the split upfront — don't split because you forgot reply() is one-shot.
 
 ### Step 8: Follow-ups
 
