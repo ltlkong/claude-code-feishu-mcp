@@ -96,34 +96,19 @@ async def transcribe_audio(client: httpx.AsyncClient, api_key: str, audio_path: 
 
 async def text_to_speech(client: httpx.AsyncClient, api_key: str, voice_id: str, text: str, temp_dir: Path) -> Path:
     """Convert text to speech via ElevenLabs TTS API. Returns path to opus file for Feishu native audio."""
-    import asyncio
     text = text[:2000]  # ElevenLabs limit
     temp_dir.mkdir(parents=True, exist_ok=True)
-    mp3_path = temp_dir / f"feishu-tts-{int(time.time() * 1000)}.mp3"
-    opus_path = mp3_path.with_suffix(".opus")
+    opus_path = temp_dir / f"feishu-tts-{int(time.time() * 1000)}.opus"
 
     resp = await client.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": api_key},
-        json={"text": text, "model_id": "eleven_multilingual_v2"},
+        json={"text": text, "model_id": "eleven_multilingual_v2", "output_format": "opus_48000_32"},
         timeout=60,
     )
     resp.raise_for_status()
-    mp3_path.write_bytes(resp.content)
+    opus_path.write_bytes(resp.content)
 
-    # Convert MP3 → opus (Feishu native audio requires opus)
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-i", str(mp3_path),
-        "-c:a", "libopus", "-b:a", "32k", "-ar", "16000", "-ac", "1",
-        str(opus_path),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.wait()
-    mp3_path.unlink(missing_ok=True)
-
-    if not opus_path.exists():
-        raise RuntimeError("ffmpeg failed to convert MP3 to opus")
     return opus_path
 
 

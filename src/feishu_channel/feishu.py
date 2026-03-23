@@ -152,13 +152,6 @@ def parse_message_content(msg) -> tuple[str, str]:
         return msg_type, content_str or ""
 
 
-def is_at_bot(msg) -> bool:
-    """Check if the bot is @mentioned in the message (for group chats)."""
-    mentions = msg.message.mentions
-    if not mentions:
-        return False
-    return True
-
 
 # ── Feishu Listener ──────────────────────────────────────────────────
 

@@ -4,6 +4,14 @@ Build rich Feishu cards with interactive components, data charts, and structured
 
 Use this skill when creating dynamic visual content: dashboards, reports, option panels, forms, or data visualizations.
 
+## Limits & Pitfalls
+
+**Size:** Card JSON must stay under **28 KB**. If content is too rich, split into multiple `reply()` calls.
+
+**CardKit incompatibilities** — these fields cause silent failures via CardKit streaming API:
+- **`row_height`** on tables — do NOT set it; omit the field entirely
+- Keep cards reasonable: ~15 top-level elements max, ≤2 charts, table rows ≤10
+
 ## Card Structure (V2 Only)
 
 All cards MUST use V2 format. Pass the JSON as the `text` argument to `reply(request_id, text)`.
@@ -54,7 +62,6 @@ Markdown extensions:
 {
   "tag": "table",
   "page_size": 5,
-  "row_height": "medium",
   "columns": [
     { "name": "name", "display_name": "Name", "data_type": "text", "width": "auto" },
     { "name": "score", "display_name": "Score", "data_type": "number" }

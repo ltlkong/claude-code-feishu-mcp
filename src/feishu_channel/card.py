@@ -3,7 +3,7 @@
 
 Card layout:
 ┌──────────────────────────────┐
-│ {icon} {action_text}         │  <- action section (updates in place)
+│ {action_text}                │  <- action section (updates in place)
 ├──────────────────────────────┤
 │ {response_text}              │  <- response section (grows over time)
 └──────────────────────────────┘
@@ -18,25 +18,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Action icon mapping — match keywords in action string
-_ICON_MAP = [
-    (("think", "reason"), "\U0001f9e0"),      # 🧠
-    (("read",), "\U0001f4d6"),                  # 📖
-    (("writ", "edit"), "\u270f\ufe0f"),         # ✏️
-    (("run", "execut"), "\u26a1"),              # ⚡
-    (("search", "find", "grep"), "\U0001f50d"), # 🔍
-]
-_DEFAULT_ICON = "\u2699\ufe0f"  # ⚙️
-
-
-def _pick_icon(action: str) -> str:
-    action_lower = action.lower()
-    for keywords, icon in _ICON_MAP:
-        if any(kw in action_lower for kw in keywords):
-            return icon
-    return _DEFAULT_ICON
-
-
 def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
     """Build a v2 (CardKit) card JSON with two sections.
 
@@ -45,10 +26,9 @@ def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
     elements = []
 
     if action:
-        icon = _pick_icon(action)
         elements.append({
             "tag": "markdown",
-            "content": f"{icon} {action}",
+            "content": action,
             "element_id": "action",
         })
         elements.append({"tag": "hr"})
