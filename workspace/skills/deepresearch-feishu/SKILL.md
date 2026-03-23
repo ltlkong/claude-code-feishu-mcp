@@ -133,8 +133,8 @@ Agent(
 - Each query should be specific and descriptive, not generic keywords
 - Include time ranges, specific data points you're looking for
 - One sub-agent per language: user's language + English
-- Example CN: `"中国房地产政策变化 2025-2026 保交楼进展 城中村改造 限购放松 房贷利率 开发商债务重组 销售数据"`
-- Example EN: `"China real estate policy changes 2025-2026 guaranteed delivery urban village renovation mortgage rates"`
+- Example (user's language): `"China real estate policy 2025-2026 guaranteed delivery urban village renovation mortgage rates developer debt restructuring sales data"` (in the user's language)
+- Example (English): `"China real estate policy changes 2025-2026 guaranteed delivery urban village renovation mortgage rates"`
 
 **After all sub-agents complete**, update status:
 
@@ -233,10 +233,16 @@ cat $(python3 $SKILL/research_state.py path --id $SESSION_ID)
 ```
 
 **Report structure:**
-1. **Key Findings** — top 3-5 takeaways with [N] citations
-2. **Detailed Analysis** — per angle, with causal chains. Not data dumps.
-3. **Data Uncertainty** — CONTRADICTED / SINGLE_SOURCE / UNVERIFIABLE items
-4. **Sources** — every source with URL, title, and Tier (1/2/3)
+1. **Key Findings** — top 3-5 takeaways, each claim with markdown link to source
+2. **Charts** — where data supports it, include Feishu V2 charts (bar/line/pie) to visualize key metrics (e.g. market size growth, adoption rates, cost savings). See feishu-card skill for chart spec.
+3. **Detailed Analysis** — per angle, with causal chains. Not data dumps. Every data point must link to its source.
+4. **Data Uncertainty** — CONTRADICTED / SINGLE_SOURCE / UNVERIFIABLE items
+5. **Sources** — EVERY source as a clickable markdown link: `[Title](URL)` with Tier noted. User must be able to click and verify each one. No bare URLs or references without links.
+
+**Source citation format (STRICT):**
+- Inline: `According to [McKinsey 2025 Report](https://url), banking AI cost reduction can reach 20%` (adapt to user's language, but always include the markdown link)
+- Source list: `- [McKinsey: The State of AI](https://full-url) — Tier 1`
+- NEVER use `[N]` numbered references without the actual URL. Every citation must be a clickable link.
 
 Generate sources:
 ```bash
@@ -245,13 +251,11 @@ python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
 
 **Delivery via Feishu:**
 
-- **Default (markdown):** `reply(request_id, report_text)` — use markdown formatting. For long reports, consider a Feishu card with collapsible sections.
-- **Card (structured):** For executive summaries, use a Feishu V2 card with charts if applicable (see feishu-card skill).
+- **Default:** Split into 2 parts:
+  1. **Executive summary card** — Feishu V2 card with key findings + 1-2 charts (market size, adoption rate, etc.)
+  2. **Full report** — `reply(request_id, report_text)` with markdown. All sources as clickable links.
+- **For data-heavy reports:** Add charts inline using the `chart` tag in Feishu V2 card JSON.
 - **PDF/DOCX/XLSX:** Generate with the appropriate skill, save to `/tmp/`, then `reply_file(chat_id, file_path)`.
-
-For long reports, split delivery:
-1. Reply with executive summary card first
-2. Then send full report as a file
 
 ### Step 8: Follow-ups
 
@@ -267,7 +271,7 @@ Suggest 2-3 specific follow-up research directions based on gaps found. Include 
 6. **Coverage** — each angle needs 2+ sources before moving on
 7. **Verify MANDATORY** — NEVER skip source verification. Assess source tier for critical claims
 8. **Map relationships before writing** — identify causal chains, contradictions, narrative structure before prose
-9. **[N] citations** — every claim cited, sources at end with URLs and tier
+9. **Clickable citations** — every claim must have an inline `[source title](URL)` markdown link. Source list at end must also be clickable links with Tier. User must be able to verify every data point by clicking.
 10. **State file = truth** — all findings on disk via research_state.py, not in memory
 11. **Live progress** — call `update_status()` at every step so the user sees what's happening
 12. **Feishu delivery** — always use `reply()` or `reply_file()` to deliver. Plain text output does NOT reach the user

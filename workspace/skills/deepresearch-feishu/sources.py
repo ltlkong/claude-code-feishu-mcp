@@ -35,41 +35,41 @@ RESEARCH_DIR = "/tmp/feishu-channel/research"
 # ── Tier Classification ──
 
 TIER_1_DOMAINS = {
-    # 中国官方
+    # China government / state media
     "gov.cn", "stats.gov.cn", "mof.gov.cn", "pbc.gov.cn", "csrc.gov.cn",
     "mohurd.gov.cn", "ndrc.gov.cn", "samr.gov.cn", "mee.gov.cn",
     "news.cn", "xinhuanet.com", "people.com.cn", "cnr.cn", "cctv.com",
-    # 上市公司/行业权威
+    # Stock exchanges / industry authority
     "sse.com.cn", "szse.cn", "hkexnews.hk",
-    # 国际权威
+    # International authority
     "reuters.com", "bloomberg.com", "ft.com", "wsj.com",
     "imf.org", "worldbank.org", "oecd.org",
-    # 研究机构
+    # Research firms
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com",
     "pwc.com", "ey.com", "kpmg.com",
     "gartner.com", "forrester.com", "idc.com",
     "grandviewresearch.com", "marketsandmarkets.com",
-    # 地产行业权威
+    # Real estate industry authority
     "cih-index.com", "fang.com",
     "cushmanwakefield.com", "jll.com", "cbre.com", "savills.com",
     "morningstar.com",
 }
 
 TIER_2_DOMAINS = {
-    # 主流财经媒体
+    # Major financial media
     "caixin.com", "21jingji.com", "stcn.com", "nbd.com.cn",
     "bjnews.com.cn", "thepaper.cn", "jiemian.com", "cls.cn",
     "yicai.com", "eeo.com.cn", "guancha.cn",
     "cnbc.com", "scmp.com", "nikkei.com",
     "forbes.com", "fortune.com", "fastcompany.com",
-    # 行业媒体
+    # Industry media
     "36kr.com", "leiphone.com", "ageclub.net",
     "sina.com.cn", "sina.com", "sohu.com", "qq.com",
     "eastmoney.com", "cnyes.com",
-    # 研究/咨询
+    # Research / consulting
     "chyxx.com", "qianzhan.com", "chinabgao.com",
     "chnfund.com",
-    # 知识平台
+    # Knowledge platforms
     "zhihu.com", "medium.com",
 }
 

@@ -18,6 +18,7 @@ Messages arrive as `<channel source="feishu" ... request_id="...">`. Plain text 
 - **`reply(request_id, text)`** — Send final response. MUST be called when done.
 - **`reply_file(chat_id, file_path)`** — Send a file. **Users cannot see local files — always send via this tool.**
 - **`reply_audio(chat_id, text)`** — Voice reply. Only when user explicitly asks.
+- **If `update_status` or `reply` fails**, the user CANNOT see your message. You MUST retry with a new `reply()` call or use `reply_file` as fallback. Never assume the user saw a failed message.
 
 Match the user's language (Chinese → Chinese, English → English).
 
