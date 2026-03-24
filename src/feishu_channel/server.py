@@ -160,6 +160,11 @@ class FeishuChannel:
         self.http = self.cards._http
         self._write_stream = None  # Captured from stdio_server for sending notifications
 
+        # Debounce: merge rapid messages from the same chat into one card
+        self._debounce_delay = 2.0  # seconds
+        self._debounce_pending: dict[str, asyncio.TimerHandle | None] = {}  # chat_id -> timer
+        self._debounce_buffer: dict[str, list[tuple[str, str, dict]]] = {}  # chat_id -> [(content, request_id, meta)]
+
         # MCP server — decorator-based handler registration
         self.server = Server(name="feishu", version="0.1.0", instructions=INSTRUCTIONS)
         self._register_tools()
@@ -235,21 +240,58 @@ class FeishuChannel:
     # ── Feishu event callbacks ───────────────────────────────────
 
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
-        """Called when a Feishu message arrives. Creates card and pushes notification."""
+        """Called when a Feishu message arrives. Debounces rapid messages from the same chat."""
         mark_activity()
         chat_id = meta["chat_id"]
         message_id = meta.get("message_id", "")
 
-        # Handle media downloads
+        # Handle media downloads immediately (don't delay file saves)
         message_type = meta["message_type"]
         if message_type in ("image", "audio", "file", "media"):
-            content = await self._download_media(content, message_type)
+            content = await self._download_media(content, message_type, message_id)
 
-        # Pre-create the card (shows "thinking..." immediately)
-        await self.cards.create_card(request_id, chat_id, message_id)
+        # Buffer the message
+        if chat_id not in self._debounce_buffer:
+            self._debounce_buffer[chat_id] = []
+        self._debounce_buffer[chat_id].append((content, request_id, meta))
 
-        # Push notification to Claude Code via raw write stream
-        await self._send_channel_notification(content, meta)
+        # Cancel existing timer for this chat
+        if chat_id in self._debounce_pending and self._debounce_pending[chat_id] is not None:
+            self._debounce_pending[chat_id].cancel()
+
+        # Set a new timer — fires after debounce_delay seconds of silence
+        loop = asyncio.get_running_loop()
+        self._debounce_pending[chat_id] = loop.call_later(
+            self._debounce_delay,
+            lambda cid=chat_id: asyncio.ensure_future(self._flush_debounce(cid)),
+        )
+
+    async def _flush_debounce(self, chat_id: str) -> None:
+        """Flush buffered messages for a chat — create one card, send ONE merged notification."""
+        messages = self._debounce_buffer.pop(chat_id, [])
+        self._debounce_pending.pop(chat_id, None)
+        if not messages:
+            return
+
+        # Use the LAST message's request_id and message_id for the card
+        last_content, last_request_id, last_meta = messages[-1]
+        last_message_id = last_meta.get("message_id", "")
+
+        # Create ONE card for the batch
+        await self.cards.create_card(last_request_id, chat_id, last_message_id)
+
+        # Merge all buffered messages into ONE notification
+        # Claude sees all messages at once as a single combined input
+        if len(messages) == 1:
+            # Single message — send as-is
+            await self._send_channel_notification(last_content, last_meta)
+        else:
+            # Multiple messages — combine contents, use last meta (has the active request_id)
+            merged_parts = []
+            for content, request_id, meta in messages:
+                merged_parts.append(content)
+            merged_content = "\n".join(merged_parts)
+            await self._send_channel_notification(merged_content, last_meta)
 
     async def _on_feishu_card_action(self, content: str, meta: dict) -> None:
         """Called when a card action (button click, form submit) arrives."""
@@ -394,33 +436,35 @@ class FeishuChannel:
     # ── Media download ───────────────────────────────────────────
     # Reuses the CardManager's httpx client and token cache
 
-    async def _download_media(self, content_json: str, message_type: str) -> str:
+    async def _download_media(self, content_json: str, message_type: str, message_id: str = "") -> str:
         """Download media and return a description with the local file path."""
         try:
             data = json.loads(content_json)
             token = await self.cards._get_token()
             temp_dir = self.settings.temp_dir
+            # Use message_id from parameter (meta), fallback to content JSON
+            msg_id = message_id or data.get("message_id", "")
 
             if message_type == "image":
                 path = await download_image(
-                    self.http, token, data["message_id"], data["image_key"], temp_dir
+                    self.http, token, msg_id, data["image_key"], temp_dir
                 )
                 return f"[Image downloaded to {path}]"
             elif message_type == "audio":
                 path = await download_audio(
-                    self.http, token, data["message_id"], data["file_key"], temp_dir
+                    self.http, token, msg_id, data["file_key"], temp_dir
                 )
                 return f"[Audio file downloaded to {path}]"
             elif message_type == "media":
                 file_name = data.get("file_name", "video.mp4")
                 path = await download_file(
-                    self.http, token, data["message_id"], data["file_key"],
+                    self.http, token, msg_id, data["file_key"],
                     file_name, temp_dir
                 )
                 return f"[Video downloaded to {path}]"
             elif message_type == "file":
                 path = await download_file(
-                    self.http, token, data["message_id"], data["file_key"],
+                    self.http, token, msg_id, data["file_key"],
                     data.get("file_name", ""), temp_dir
                 )
                 return f"[File downloaded to {path}]"
