@@ -179,15 +179,15 @@ TOOLS = [
         },
     ),
     types.Tool(
-        name="create_spreadsheet",
-        description="Create a Feishu spreadsheet with title and initial data. Returns the spreadsheet URL.",
+        name="create_bitable",
+        description="Create a Feishu Bitable (多维表格) with custom fields and data. Supports: text, number, single_select, multi_select, date, checkbox. Returns the bitable URL.",
         inputSchema={
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Spreadsheet title"},
-                "headers": {"type": "array", "description": "Column headers", "items": {"type": "string"}},
-                "rows": {"type": "array", "description": "Array of rows, each row is an array of cell values", "items": {"type": "array", "items": {}}},
-                "chat_id": {"type": "string", "description": "Optional: send spreadsheet link to this chat after creation", "default": ""},
+                "title": {"type": "string", "description": "Bitable title"},
+                "fields": {"type": "array", "description": "Field definitions: {\"name\":\"字段名\",\"type\":\"text|number|single_select|multi_select|date|checkbox\",\"options\":[\"选项1\",\"选项2\"]}", "items": {"type": "object"}},
+                "records": {"type": "array", "description": "Array of records. Each record is an object mapping field names to values. Single select: string, multi select: array of strings, date: ISO string or timestamp, checkbox: boolean.", "items": {"type": "object"}},
+                "chat_id": {"type": "string", "description": "Optional: send bitable link to this chat after creation", "default": ""},
             },
             "required": ["title"],
         },
@@ -272,9 +272,9 @@ class FeishuChannel:
             elif name == "create_doc":
                 result = await channel._handle_create_doc(
                     arguments["title"], arguments.get("content", []), arguments.get("chat_id", ""))
-            elif name == "create_spreadsheet":
-                result = await channel._handle_create_spreadsheet(
-                    arguments["title"], arguments.get("headers", []), arguments.get("rows", []), arguments.get("chat_id", ""))
+            elif name == "create_bitable":
+                result = await channel._handle_create_bitable(
+                    arguments["title"], arguments.get("fields", []), arguments.get("records", []), arguments.get("chat_id", ""))
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -692,47 +692,79 @@ class FeishuChannel:
             logger.error("Create doc failed: %s", e)
             return {"status": "error", "message": f"Create doc failed: {e}"}
 
-    async def _handle_create_spreadsheet(self, title: str, headers: list = None, rows: list = None, chat_id: str = "") -> dict:
-        """Create a Feishu spreadsheet with optional initial data."""
+    async def _handle_create_bitable(self, title: str, fields: list = None, records: list = None, chat_id: str = "") -> dict:
+        """Create a Feishu Bitable (多维表格) with custom fields and data."""
         try:
             token = await self.cards._get_token()
-            # Step 1: Create spreadsheet
+            field_type_map = {"text": 1, "number": 2, "single_select": 3, "multi_select": 4, "date": 5, "checkbox": 7}
+
+            # Step 1: Create bitable
             resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/sheets/v3/spreadsheets",
+                "https://open.feishu.cn/open-apis/bitable/v1/apps",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"title": title},
+                json={"name": title},
             )
             data = resp.json()
             if data.get("code") != 0:
-                return {"status": "error", "message": f"Spreadsheet creation failed: {data}"}
-            spreadsheet_token = data["data"]["spreadsheet"]["spreadsheet_token"]
-            url = f"https://hcnylnojpxbl.feishu.cn/sheets/{spreadsheet_token}"
+                return {"status": "error", "message": f"Bitable creation failed: {data}"}
+            app_token = data["data"]["app"]["app_token"]
+            url = data["data"]["app"]["url"]
 
-            # Step 2: Write headers and rows if provided
-            if headers or rows:
-                # Get the first sheet ID
-                resp = await self.http.get(
-                    f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query",
+            # Get default table
+            resp = await self.http.get(
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            table_id = resp.json()["data"]["items"][0]["table_id"]
+
+            # Delete default fields (except the first one which we'll repurpose)
+            resp = await self.http.get(
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            default_fields = resp.json()["data"]["items"]
+            for f in default_fields[1:]:
+                await self.http.delete(
+                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{f['field_id']}",
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                sheet_data = resp.json()
-                sheet_id = sheet_data["data"]["sheets"][0]["sheet_id"] if sheet_data.get("code") == 0 else None
 
-                if sheet_id:
-                    values = []
-                    if headers:
-                        values.append(headers)
-                    if rows:
-                        values.extend(rows)
-                    if values:
-                        range_str = f"{sheet_id}!A1"
-                        await self.http.post(
-                            f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values",
-                            headers={"Authorization": f"Bearer {token}"},
-                            json={"valueRange": {"range": range_str, "values": values}},
-                        )
+            # Step 2: Add custom fields
+            if fields:
+                # Rename first default field to the first custom field
+                first_field = fields[0]
+                ft = field_type_map.get(first_field.get("type", "text"), 1)
+                update_json = {"field_name": first_field["name"], "type": ft}
+                if first_field.get("options"):
+                    update_json["property"] = {"options": [{"name": o} for o in first_field["options"]]}
+                await self.http.put(
+                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{default_fields[0]['field_id']}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=update_json,
+                )
 
-            # Step 3: Optionally send plain link to chat (renders as spreadsheet preview card)
+                # Add remaining fields
+                for f in fields[1:]:
+                    ft = field_type_map.get(f.get("type", "text"), 1)
+                    field_json = {"field_name": f["name"], "type": ft}
+                    if f.get("options"):
+                        field_json["property"] = {"options": [{"name": o} for o in f["options"]]}
+                    await self.http.post(
+                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json=field_json,
+                    )
+
+            # Step 3: Add records (one by one — batch_create has data loss issues)
+            if records:
+                for r in records:
+                    await self.http.post(
+                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={"fields": r},
+                    )
+
+            # Step 4: Send plain link to chat
             if chat_id:
                 await self.http.post(
                     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
@@ -744,10 +776,10 @@ class FeishuChannel:
                     },
                 )
 
-            return {"status": "ok", "spreadsheet_token": spreadsheet_token, "url": url}
+            return {"status": "ok", "app_token": app_token, "url": url}
         except Exception as e:
-            logger.error("Create spreadsheet failed: %s", e)
-            return {"status": "error", "message": f"Create spreadsheet failed: {e}"}
+            logger.error("Create bitable failed: %s", e)
+            return {"status": "error", "message": f"Create bitable failed: {e}"}
 
     # ── Post (rich text) inbound processing ─────────────────────
 
