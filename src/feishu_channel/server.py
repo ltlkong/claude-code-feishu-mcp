@@ -182,6 +182,9 @@ class FeishuChannel:
         self.http = self.cards._http
         self._write_stream = None  # Captured from stdio_server for sending notifications
 
+        # User name cache: open_id -> display name
+        self._user_names: dict[str, str] = {}
+
         # Debounce: merge rapid messages from the same chat into one card
         self._debounce_delay = 2.0  # seconds
         self._debounce_pending: dict[str, asyncio.TimerHandle | None] = {}  # chat_id -> timer
@@ -266,16 +269,45 @@ class FeishuChannel:
 
     # ── Feishu event callbacks ───────────────────────────────────
 
+    async def _resolve_user_name(self, user_id: str, chat_id: str) -> str:
+        """Resolve a user's display name, with caching. Falls back to user_id."""
+        if user_id in self._user_names:
+            return self._user_names[user_id]
+        try:
+            token = await self.cards._get_token()
+            # Try chat members API (works for external users too)
+            resp = await self.http.get(
+                f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/members?member_id_type=open_id",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                for m in data["data"].get("items", []):
+                    mid = m.get("member_id", "")
+                    name = m.get("name", "")
+                    if mid and name:
+                        self._user_names[mid] = name
+        except Exception as e:
+            logger.debug("Failed to resolve user names: %s", e)
+        return self._user_names.get(user_id, user_id)
+
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
         """Called when a Feishu message arrives. Debounces rapid messages from the same chat."""
         mark_activity()
         chat_id = meta["chat_id"]
         message_id = meta.get("message_id", "")
 
+        # Resolve sender name
+        user_id = meta.get("user_id", "")
+        if user_id:
+            meta["sender_name"] = await self._resolve_user_name(user_id, chat_id)
+
         # Handle media downloads immediately (don't delay file saves)
         message_type = meta["message_type"]
         if message_type in ("image", "audio", "file", "media"):
             content = await self._download_media(content, message_type, message_id)
+        elif message_type == "post":
+            content = await self._process_post_content(content, message_id)
 
         # Buffer the message
         if chat_id not in self._debounce_buffer:
@@ -565,6 +597,81 @@ class FeishuChannel:
         except Exception as e:
             logger.error("TTS failed: %s", e)
             return {"status": "error", "message": f"TTS failed: {e}"}
+
+    # ── Post (rich text) inbound processing ─────────────────────
+
+    async def _process_post_content(self, content_json: str, message_id: str) -> str:
+        """Parse post (rich text) content, download embedded media, and return readable text.
+
+        Converts the post JSON into a sequential text representation where images and
+        videos are downloaded and replaced with local file paths, preserving order.
+        """
+        try:
+            data = json.loads(content_json)
+            post = data.get("content", [])
+            title = data.get("title", "")
+            token = await self.cards._get_token()
+            temp_dir = self.settings.temp_dir
+
+            lines = []
+            if title:
+                lines.append(f"[Title: {title}]")
+
+            media_idx = 0
+            for line_elements in post:
+                line_parts = []
+                for elem in line_elements:
+                    tag = elem.get("tag", "")
+
+                    if tag == "text":
+                        line_parts.append(elem.get("text", ""))
+
+                    elif tag == "a":
+                        text = elem.get("text", "")
+                        href = elem.get("href", "")
+                        line_parts.append(f"{text}({href})")
+
+                    elif tag == "at":
+                        line_parts.append(f"@{elem.get('user_name', elem.get('user_id', ''))}")
+
+                    elif tag == "img":
+                        image_key = elem.get("image_key", "")
+                        if image_key and message_id:
+                            try:
+                                path = await download_image(
+                                    self.http, token, message_id, image_key, temp_dir
+                                )
+                                line_parts.append(f"[Image downloaded to {path}]")
+                            except Exception as e:
+                                line_parts.append(f"[Image: {image_key} (download failed: {e})]")
+                        else:
+                            line_parts.append(f"[Image: {image_key}]")
+
+                    elif tag == "media":
+                        file_key = elem.get("file_key", "")
+                        file_name = elem.get("file_name", f"media_{media_idx}.mp4")
+                        if file_key and message_id:
+                            try:
+                                path = await download_file(
+                                    self.http, token, message_id, file_key, file_name, temp_dir
+                                )
+                                line_parts.append(f"[Video downloaded to {path}]")
+                            except Exception as e:
+                                line_parts.append(f"[Video: {file_key} (download failed: {e})]")
+                        else:
+                            line_parts.append(f"[Video: {file_key}]")
+                        media_idx += 1
+
+                    elif tag == "emotion":
+                        line_parts.append(elem.get("emoji_type", ""))
+
+                if line_parts:
+                    lines.append("".join(line_parts))
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error("Post content processing failed: %s", e)
+            return content_json
 
     # ── Media download ───────────────────────────────────────────
     # Reuses the CardManager's httpx client and token cache

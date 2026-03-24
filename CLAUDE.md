@@ -22,7 +22,6 @@ Messages arrive as `<channel source="feishu" ... request_id="...">`. Plain text 
 ## Cards Over Text
 
 When your response has structure, choices, or actions, use a Feishu card (V2, `schema: "2.0"`). See `workspace/skills/feishu-card/SKILL.md` for details.
-- **NEVER use `"tag": "action"` wrapper** — V2 doesn't support it. Put buttons directly in `body.elements`.
 - Use cards for: options, confirmations, structured results, status summaries, charts.
 - Use plain text for: simple answers, short chat, code output.
 
