@@ -165,6 +165,33 @@ TOOLS = [
             "required": ["reminder_id"],
         },
     ),
+    types.Tool(
+        name="create_doc",
+        description="Create a Feishu cloud document with title and content blocks. Returns the document URL. Content blocks: heading1/heading2/heading3, text, bullet, ordered, code, quote.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "content": {"type": "array", "description": "Array of content blocks: {\"type\":\"heading1\",\"text\":\"...\"}, {\"type\":\"text\",\"text\":\"...\"}, {\"type\":\"bullet\",\"text\":\"...\"}, {\"type\":\"code\",\"text\":\"...\",\"language\":\"python\"}", "items": {"type": "object"}},
+                "chat_id": {"type": "string", "description": "Optional: send document link to this chat after creation", "default": ""},
+            },
+            "required": ["title", "content"],
+        },
+    ),
+    types.Tool(
+        name="create_spreadsheet",
+        description="Create a Feishu spreadsheet with title and initial data. Returns the spreadsheet URL.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Spreadsheet title"},
+                "headers": {"type": "array", "description": "Column headers", "items": {"type": "string"}},
+                "rows": {"type": "array", "description": "Array of rows, each row is an array of cell values", "items": {"type": "array", "items": {}}},
+                "chat_id": {"type": "string", "description": "Optional: send spreadsheet link to this chat after creation", "default": ""},
+            },
+            "required": ["title"],
+        },
+    ),
 ]
 
 
@@ -242,6 +269,12 @@ class FeishuChannel:
                 result = list_reminders()
             elif name == "delete_reminder":
                 result = delete_reminder(arguments["reminder_id"])
+            elif name == "create_doc":
+                result = await channel._handle_create_doc(
+                    arguments["title"], arguments.get("content", []), arguments.get("chat_id", ""))
+            elif name == "create_spreadsheet":
+                result = await channel._handle_create_spreadsheet(
+                    arguments["title"], arguments.get("headers", []), arguments.get("rows", []), arguments.get("chat_id", ""))
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -597,6 +630,134 @@ class FeishuChannel:
         except Exception as e:
             logger.error("TTS failed: %s", e)
             return {"status": "error", "message": f"TTS failed: {e}"}
+
+    # ── Feishu Doc / Spreadsheet creation ───────────────────────
+
+    async def _handle_create_doc(self, title: str, content: list, chat_id: str = "") -> dict:
+        """Create a Feishu cloud document with structured content."""
+        try:
+            token = await self.cards._get_token()
+            # Step 1: Create document
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/docx/v1/documents",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"title": title},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Doc creation failed: {data}"}
+            doc_id = data["data"]["document"]["document_id"]
+
+            # Step 2: Add content blocks
+            if content:
+                block_type_map = {"heading1": 3, "heading2": 4, "heading3": 5, "text": 2, "bullet": 12, "ordered": 13, "code": 14, "quote": 15}
+                children = []
+                for block in content:
+                    bt = block.get("type", "text")
+                    text = block.get("text", "")
+                    block_type = block_type_map.get(bt, 2)
+                    block_key = bt if bt in block_type_map else "text"
+                    if block_key in ("heading1", "heading2", "heading3"):
+                        children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
+                    elif block_key == "code":
+                        lang = block.get("language", "plain_text")
+                        children.append({"block_type": block_type, "code": {"elements": [{"text_run": {"content": text}}], "language": lang}})
+                    else:
+                        children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
+
+                await self.http.post(
+                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"children": children, "index": 0},
+                )
+
+            # Step 3: Get the URL
+            tenant = self.settings.feishu_app_id  # approximate
+            url = f"https://hcnylnojpxbl.feishu.cn/docx/{doc_id}"
+
+            # Step 4: Optionally send link to chat
+            if chat_id:
+                await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "interactive",
+                        "content": json.dumps({
+                            "schema": "2.0",
+                            "body": {"elements": [
+                                {"tag": "markdown", "content": f"**📄 {title}**\n[点击打开文档]({url})"},
+                            ]},
+                        }),
+                    },
+                )
+
+            return {"status": "ok", "document_id": doc_id, "url": url}
+        except Exception as e:
+            logger.error("Create doc failed: %s", e)
+            return {"status": "error", "message": f"Create doc failed: {e}"}
+
+    async def _handle_create_spreadsheet(self, title: str, headers: list = None, rows: list = None, chat_id: str = "") -> dict:
+        """Create a Feishu spreadsheet with optional initial data."""
+        try:
+            token = await self.cards._get_token()
+            # Step 1: Create spreadsheet
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/sheets/v3/spreadsheets",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"title": title},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Spreadsheet creation failed: {data}"}
+            spreadsheet_token = data["data"]["spreadsheet"]["spreadsheet_token"]
+            url = f"https://hcnylnojpxbl.feishu.cn/sheets/{spreadsheet_token}"
+
+            # Step 2: Write headers and rows if provided
+            if headers or rows:
+                # Get the first sheet ID
+                resp = await self.http.get(
+                    f"https://open.feishu.cn/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                sheet_data = resp.json()
+                sheet_id = sheet_data["data"]["sheets"][0]["sheet_id"] if sheet_data.get("code") == 0 else None
+
+                if sheet_id:
+                    values = []
+                    if headers:
+                        values.append(headers)
+                    if rows:
+                        values.extend(rows)
+                    if values:
+                        range_str = f"{sheet_id}!A1"
+                        await self.http.post(
+                            f"https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={"valueRange": {"range": range_str, "values": values}},
+                        )
+
+            # Step 3: Optionally send link to chat
+            if chat_id:
+                await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "interactive",
+                        "content": json.dumps({
+                            "schema": "2.0",
+                            "body": {"elements": [
+                                {"tag": "markdown", "content": f"**📊 {title}**\n[点击打开表格]({url})"},
+                            ]},
+                        }),
+                    },
+                )
+
+            return {"status": "ok", "spreadsheet_token": spreadsheet_token, "url": url}
+        except Exception as e:
+            logger.error("Create spreadsheet failed: %s", e)
+            return {"status": "error", "message": f"Create spreadsheet failed: {e}"}
 
     # ── Post (rich text) inbound processing ─────────────────────
 
