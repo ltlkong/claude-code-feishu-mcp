@@ -675,20 +675,15 @@ class FeishuChannel:
             tenant = self.settings.feishu_app_id  # approximate
             url = f"https://hcnylnojpxbl.feishu.cn/docx/{doc_id}"
 
-            # Step 4: Optionally send link to chat
+            # Step 4: Optionally send plain link to chat (renders as doc preview card)
             if chat_id:
                 await self.http.post(
                     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
                     headers={"Authorization": f"Bearer {token}"},
                     json={
                         "receive_id": chat_id,
-                        "msg_type": "interactive",
-                        "content": json.dumps({
-                            "schema": "2.0",
-                            "body": {"elements": [
-                                {"tag": "markdown", "content": f"**📄 {title}**\n[点击打开文档]({url})"},
-                            ]},
-                        }),
+                        "msg_type": "text",
+                        "content": json.dumps({"text": url}),
                     },
                 )
 
@@ -737,20 +732,15 @@ class FeishuChannel:
                             json={"valueRange": {"range": range_str, "values": values}},
                         )
 
-            # Step 3: Optionally send link to chat
+            # Step 3: Optionally send plain link to chat (renders as spreadsheet preview card)
             if chat_id:
                 await self.http.post(
                     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
                     headers={"Authorization": f"Bearer {token}"},
                     json={
                         "receive_id": chat_id,
-                        "msg_type": "interactive",
-                        "content": json.dumps({
-                            "schema": "2.0",
-                            "body": {"elements": [
-                                {"tag": "markdown", "content": f"**📊 {title}**\n[点击打开表格]({url})"},
-                            ]},
-                        }),
+                        "msg_type": "text",
+                        "content": json.dumps({"text": url}),
                     },
                 )
 
