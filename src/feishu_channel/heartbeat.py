@@ -27,6 +27,28 @@ RECENT_MESSAGES = 20  # Only look at the last N messages from current session
 # Track the hash of the last processed messages to avoid re-processing
 _last_context_hash: str | None = None
 
+# Track last activity time for inactivity-based heartbeat
+_last_activity_time: float = time.time()
+_inactivity_threshold_minutes: int = 30
+
+
+def configure_inactivity(minutes: int):
+    """Set the inactivity threshold (called from server with config value)."""
+    global _inactivity_threshold_minutes
+    _inactivity_threshold_minutes = minutes
+
+
+def mark_activity():
+    """Call this when a message is received to reset the inactivity timer."""
+    global _last_activity_time
+    _last_activity_time = time.time()
+
+
+def is_inactive() -> bool:
+    """Check if the user has been inactive for longer than the threshold."""
+    elapsed = time.time() - _last_activity_time
+    return elapsed >= _inactivity_threshold_minutes * 60
+
 
 def _read_current_session(max_messages: int = RECENT_MESSAGES) -> tuple[str, dict[str, set[str]], str | None]:
     """Read the last N messages from the current (most recent) session.
@@ -259,31 +281,41 @@ def run_heartbeat(model: str = DEFAULT_MODEL) -> tuple[str | None, str | None]:
 
 
 async def heartbeat_loop(send_fn, interval_minutes: int = DEFAULT_INTERVAL_MINUTES, model: str = DEFAULT_MODEL):
-    """Background loop that periodically checks if there's something to proactively say.
+    """Background loop that checks in when the user has been inactive.
 
-    Dynamically routes messages to the appropriate chat based on conversation context.
+    Only triggers after INACTIVITY_THRESHOLD_MINUTES (default 30) of no messages.
+    Polls every 5 minutes to check inactivity, then runs heartbeat logic.
+    Context hash dedup prevents repeated messages on unchanged conversations.
 
     Args:
         send_fn: async function(chat_id, text) to send a Feishu message
-        interval_minutes: How often to check (default 60 min)
+        interval_minutes: Polling interval in minutes (default 5)
         model: Claude model to use (default "haiku")
     """
-    interval_seconds = interval_minutes * 60
-    logger.info("Heartbeat started: interval=%dm, model=%s, routing=dynamic", interval_minutes, model)
+    poll_seconds = 5 * 60  # Check every 5 minutes
+    logger.info("Heartbeat started: inactivity_threshold=%dm, model=%s",
+                _inactivity_threshold_minutes, model)
 
     # Wait a bit before first check (let the system settle)
     await asyncio.sleep(120)
 
     while True:
         try:
-            loop = asyncio.get_running_loop()
-            message, chat_id = await loop.run_in_executor(None, run_heartbeat, model)
+            if is_inactive():
+                logger.debug("Heartbeat: user inactive for %.0fm, running check",
+                             (time.time() - _last_activity_time) / 60)
 
-            if message and chat_id:
-                await send_fn(chat_id, message)
-                logger.info("Heartbeat: sent proactive message to %s", chat_id)
+                loop = asyncio.get_running_loop()
+                message, chat_id = await loop.run_in_executor(None, run_heartbeat, model)
+
+                if message and chat_id:
+                    await send_fn(chat_id, message)
+                    logger.info("Heartbeat: sent proactive message to %s", chat_id)
+            else:
+                logger.debug("Heartbeat: user active (last msg %.0fs ago), skipping",
+                             time.time() - _last_activity_time)
 
         except Exception as e:
             logger.error("Heartbeat loop error: %s", e)
 
-        await asyncio.sleep(interval_seconds)
+        await asyncio.sleep(poll_seconds)

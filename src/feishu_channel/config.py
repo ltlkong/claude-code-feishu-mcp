@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # chat_id is auto-detected from the most recent Feishu message in the session
     heartbeat_model: str = "haiku"
     heartbeat_interval_minutes: int = 60
+    heartbeat_inactivity_minutes: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",

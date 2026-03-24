@@ -21,7 +21,7 @@ from .card import CardManager
 from .feishu import FeishuListener
 from .media import cleanup_old_files, download_image, download_audio, download_file, text_to_speech
 from .reminder import create_reminder, list_reminders, delete_reminder, SCHEDULED_DIR
-from .heartbeat import heartbeat_loop
+from .heartbeat import heartbeat_loop, mark_activity, configure_inactivity
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,7 @@ class FeishuChannel:
 
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
         """Called when a Feishu message arrives. Creates card and pushes notification."""
+        mark_activity()
         chat_id = meta["chat_id"]
         message_id = meta.get("message_id", "")
 
@@ -386,11 +387,10 @@ class FeishuChannel:
         # Start scheduled task watcher
         asyncio.create_task(self._watch_scheduled_tasks())
 
-        # Start heartbeat (proactive messaging based on conversation history)
-        # chat_id is auto-detected from the most recent Feishu message in the session
+        # Start heartbeat (proactive messaging when user is inactive)
+        configure_inactivity(self.settings.heartbeat_inactivity_minutes)
         asyncio.create_task(heartbeat_loop(
             send_fn=self._send_direct_message,
-            interval_minutes=self.settings.heartbeat_interval_minutes,
             model=self.settings.heartbeat_model,
         ))
 
