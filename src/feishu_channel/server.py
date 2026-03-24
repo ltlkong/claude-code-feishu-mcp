@@ -97,6 +97,26 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="reply_post",
+        description="Send a rich text (post) message to Feishu with mixed text, images, videos, and links in one message. Images and videos can use local file paths (auto-uploaded).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Feishu chat to send to"},
+                "title": {"type": "string", "description": "Post title (optional, can be empty string)", "default": ""},
+                "content": {
+                    "type": "array",
+                    "description": "Array of lines. Each line is an array of elements: {\"tag\":\"text\",\"text\":\"...\"} or {\"tag\":\"img\",\"image_key\":\"...\"} or {\"tag\":\"a\",\"text\":\"link text\",\"href\":\"url\"}",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "object"}
+                    }
+                },
+            },
+            "required": ["chat_id", "content"],
+        },
+    ),
+    types.Tool(
         name="reply_audio",
         description="Convert text to speech and send as a voice message to Feishu.",
         inputSchema={
@@ -197,6 +217,9 @@ class FeishuChannel:
                 result = await channel._handle_reply_image(arguments["chat_id"], arguments["image_path"])
             elif name == "reply_video":
                 result = await channel._handle_reply_video(arguments["chat_id"], arguments["video_path"])
+            elif name == "reply_post":
+                result = await channel._handle_reply_post(
+                    arguments["chat_id"], arguments.get("title", ""), arguments["content"])
             elif name == "reply_audio":
                 result = await channel._handle_reply_audio(arguments["chat_id"], arguments["text"])
             elif name == "create_reminder":
@@ -347,6 +370,112 @@ class FeishuChannel:
         except Exception as e:
             logger.error("Image reply failed: %s", e)
             return {"status": "error", "message": f"Image reply failed: {e}"}
+
+    # ── Post (rich text) reply ────────────────────────────────────
+
+    async def _upload_image_for_key(self, image_path: str) -> str | None:
+        """Upload an image and return its image_key for use in post messages."""
+        import os
+        if not os.path.exists(image_path):
+            return None
+        try:
+            token = await self.cards._get_token()
+            with open(image_path, "rb") as f:
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/images",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"image_type": "message"},
+                    files={"image": (os.path.basename(image_path), f)},
+                )
+            data = resp.json()
+            if data.get("code") == 0:
+                return data["data"]["image_key"]
+        except Exception as e:
+            logger.error("Image upload for post failed: %s", e)
+        return None
+
+    async def _upload_video_for_keys(self, video_path: str) -> tuple[str | None, str | None]:
+        """Upload a video and its thumbnail, return (file_key, image_key)."""
+        import os
+        import subprocess as _sp
+        if not os.path.exists(video_path):
+            return None, None
+        try:
+            token = await self.cards._get_token()
+            temp_dir = self.settings.temp_dir
+
+            # Extract thumbnail
+            thumb_path = str(temp_dir / "post_video_thumb.jpg")
+            _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
+                     thumb_path, "-y"], capture_output=True, timeout=10)
+
+            # Upload thumbnail
+            image_key = None
+            if os.path.exists(thumb_path):
+                image_key = await self._upload_image_for_key(thumb_path)
+
+            # Upload video
+            file_name = os.path.basename(video_path)
+            with open(video_path, "rb") as f:
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"file_type": "mp4", "file_name": file_name},
+                    files={"file": (file_name, f)},
+                )
+            data = resp.json()
+            file_key = data["data"]["file_key"] if data.get("code") == 0 else None
+            return file_key, image_key
+        except Exception as e:
+            logger.error("Video upload for post failed: %s", e)
+            return None, None
+
+    async def _handle_reply_post(self, chat_id: str, title: str, content: list) -> dict:
+        """Send a rich text post message with mixed text, images, videos, and links.
+
+        Content elements:
+        - {"tag":"text", "text":"..."} — text
+        - {"tag":"img", "image_key":"..."} or {"tag":"img", "image_path":"/local/path"} — image (auto-uploads)
+        - {"tag":"media", "file_key":"...", "image_key":"..."} or {"tag":"media", "video_path":"/local/path"} — video (auto-uploads)
+        - {"tag":"a", "text":"...", "href":"..."} — link
+        - {"tag":"at", "user_id":"..."} — @mention
+        """
+        try:
+            token = await self.cards._get_token()
+            # Auto-upload local files
+            for line in content:
+                for elem in line:
+                    # Auto-upload images
+                    if elem.get("tag") == "img" and "image_path" in elem and "image_key" not in elem:
+                        key = await self._upload_image_for_key(elem["image_path"])
+                        if key:
+                            elem["image_key"] = key
+                        elem.pop("image_path", None)
+                    # Auto-upload videos
+                    if elem.get("tag") == "media" and "video_path" in elem and "file_key" not in elem:
+                        file_key, image_key = await self._upload_video_for_keys(elem["video_path"])
+                        if file_key:
+                            elem["file_key"] = file_key
+                        if image_key:
+                            elem["image_key"] = image_key
+                        elem.pop("video_path", None)
+            post_body = {"zh_cn": {"title": title, "content": content}}
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "receive_id": chat_id,
+                    "msg_type": "post",
+                    "content": json.dumps({"post": post_body}),
+                },
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Post send failed: {data}"}
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error("Post reply failed: %s", e)
+            return {"status": "error", "message": f"Post reply failed: {e}"}
 
     # ── Video reply ────────────────────────────────────────────────
 
