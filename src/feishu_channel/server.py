@@ -180,13 +180,14 @@ TOOLS = [
     ),
     types.Tool(
         name="create_bitable",
-        description="Create a Feishu Bitable (多维表格) with custom fields and data. Supports: text, number, single_select, multi_select, date, checkbox. Returns the bitable URL.",
+        description="Create a Feishu Bitable (多维表格) with custom fields, data, and views. Field types: text, number, single_select, multi_select, date, checkbox, created_time, updated_time. View types: grid, kanban, gallery, gantt, form. NOTE: kanban views require manual group field config in Feishu UI (API limitation). Sends plain link to chat for Feishu preview card.",
         inputSchema={
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Bitable title"},
-                "fields": {"type": "array", "description": "Field definitions: {\"name\":\"字段名\",\"type\":\"text|number|single_select|multi_select|date|checkbox\",\"options\":[\"选项1\",\"选项2\"]}", "items": {"type": "object"}},
-                "records": {"type": "array", "description": "Array of records. Each record is an object mapping field names to values. Single select: string, multi select: array of strings, date: ISO string or timestamp, checkbox: boolean.", "items": {"type": "object"}},
+                "fields": {"type": "array", "description": "Field definitions: {\"name\":\"字段名\",\"type\":\"text|number|single_select|multi_select|date|checkbox|created_time|updated_time\",\"options\":[\"选项1\",\"选项2\"]}", "items": {"type": "object"}},
+                "records": {"type": "array", "description": "Array of records. Each record maps field names to values. Single select: string, multi select: [strings], date: millisecond timestamp, checkbox: boolean.", "items": {"type": "object"}},
+                "views": {"type": "array", "description": "Additional views to create: {\"name\":\"视图名\",\"type\":\"kanban|gallery|gantt|form\"}. Grid view is created by default.", "items": {"type": "object"}, "default": []},
                 "chat_id": {"type": "string", "description": "Optional: send bitable link to this chat after creation", "default": ""},
             },
             "required": ["title"],
@@ -274,7 +275,8 @@ class FeishuChannel:
                     arguments["title"], arguments.get("content", []), arguments.get("chat_id", ""))
             elif name == "create_bitable":
                 result = await channel._handle_create_bitable(
-                    arguments["title"], arguments.get("fields", []), arguments.get("records", []), arguments.get("chat_id", ""))
+                    arguments["title"], arguments.get("fields", []), arguments.get("records", []),
+                    arguments.get("views", []), arguments.get("chat_id", ""))
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -692,11 +694,15 @@ class FeishuChannel:
             logger.error("Create doc failed: %s", e)
             return {"status": "error", "message": f"Create doc failed: {e}"}
 
-    async def _handle_create_bitable(self, title: str, fields: list = None, records: list = None, chat_id: str = "") -> dict:
-        """Create a Feishu Bitable (多维表格) with custom fields and data."""
+    async def _handle_create_bitable(self, title: str, fields: list = None, records: list = None,
+                                      views: list = None, chat_id: str = "") -> dict:
+        """Create a Feishu Bitable (多维表格) with custom fields, data, and views."""
         try:
             token = await self.cards._get_token()
-            field_type_map = {"text": 1, "number": 2, "single_select": 3, "multi_select": 4, "date": 5, "checkbox": 7}
+            field_type_map = {
+                "text": 1, "number": 2, "single_select": 3, "multi_select": 4,
+                "date": 5, "checkbox": 7, "created_time": 1002, "updated_time": 1003,
+            }
 
             # Step 1: Create bitable
             resp = await self.http.post(
@@ -764,7 +770,18 @@ class FeishuChannel:
                         json={"fields": r},
                     )
 
-            # Step 4: Send plain link to chat
+            # Step 4: Add views (kanban group field must be set manually in Feishu UI)
+            if views:
+                view_type_map = {"kanban": "kanban", "gallery": "gallery", "gantt": "gantt", "form": "form", "grid": "grid"}
+                for v in views:
+                    vt = view_type_map.get(v.get("type", "grid"), "grid")
+                    await self.http.post(
+                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/views",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={"view_name": v.get("name", vt), "view_type": vt},
+                    )
+
+            # Step 5: Send plain link to chat
             if chat_id:
                 await self.http.post(
                     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
