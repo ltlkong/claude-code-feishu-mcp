@@ -466,7 +466,7 @@ class FeishuChannel:
                 json={
                     "receive_id": chat_id,
                     "msg_type": "post",
-                    "content": json.dumps({"post": post_body}),
+                    "content": json.dumps(post_body),
                 },
             )
             data = resp.json()
