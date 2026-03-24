@@ -41,4 +41,4 @@ When your response has structure, choices, or actions, use a Feishu card (V2, `s
 
 ## Reminders
 
-Create timed messages via cron: `create_reminder(id, cron, chat_id, message, smart=false)`. Cron format: `minute hour day month weekday`, timezone Asia/Shanghai. Use `list_reminders()` / `delete_reminder(id)` to manage.
+Create timed messages via cron: `create_reminder(id, cron, chat_id, message, smart=false)`. Cron format: `minute hour day month weekday`, **timezone UTC**. Code auto-converts to system local timezone before writing to crontab. Use `list_reminders()` / `delete_reminder(id)` to manage.

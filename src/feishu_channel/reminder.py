@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -178,13 +179,58 @@ def _line_matches_id(line: str, reminder_id: str) -> bool:
     return parsed_id == reminder_id
 
 
+def _utc_cron_to_local(cron_expr: str) -> str:
+    """Convert a UTC cron expression to system local timezone.
+
+    Only converts when hour and minute are specific numbers (not wildcards/ranges).
+    Handles day/month/day-of-week rollover when the hour shift crosses midnight.
+    """
+    fields = cron_expr.strip().split()
+    if len(fields) != 5:
+        return cron_expr
+
+    minute, hour, day, month, dow = fields
+
+    # Only convert if hour is a specific number
+    if not hour.isdigit() or not minute.isdigit():
+        return cron_expr
+
+    # Build a reference UTC datetime for conversion
+    now = datetime.now(timezone.utc)
+    try:
+        ref_utc = now.replace(
+            hour=int(hour), minute=int(minute), second=0, microsecond=0,
+            day=int(day) if day.isdigit() else now.day,
+            month=int(month) if month.isdigit() else now.month,
+        )
+    except ValueError:
+        return cron_expr
+
+    # Convert to system local timezone
+    ref_local = ref_utc.astimezone()
+
+    new_minute = str(ref_local.minute)
+    new_hour = str(ref_local.hour)
+    new_day = str(ref_local.day) if day.isdigit() else day
+    new_month = str(ref_local.month) if month.isdigit() else month
+
+    # Day-of-week: cron uses 0=Sunday, Python weekday() uses 0=Monday
+    if dow.isdigit():
+        new_dow = str((ref_local.weekday() + 1) % 7)
+    else:
+        new_dow = dow
+
+    return f"{new_minute} {new_hour} {new_day} {new_month} {new_dow}"
+
+
 def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str,
                     smart: bool = False, max_runs: int = 0) -> dict:
     """Add a cron entry for a scheduled reminder.
 
     Args:
         reminder_id: Unique identifier for this reminder (e.g. "morning_standup")
-        cron_expr: Cron expression (e.g. "0 9 * * *" for daily 9am)
+        cron_expr: Cron expression in UTC (e.g. "0 1 * * *" for daily 1am UTC).
+                   Automatically converted to system local timezone before writing to crontab.
         chat_id: Feishu chat_id to send to
         message: For simple: the message text. For smart: the prompt for Claude.
         smart: If True, triggers Claude to think instead of sending a fixed message.
@@ -193,6 +239,10 @@ def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str
     fields = cron_expr.strip().split()
     if len(fields) != 5:
         return {"status": "error", "message": f"Invalid cron expression: need 5 fields, got {len(fields)}"}
+
+    # Convert UTC cron to system local timezone for macOS crontab
+    local_cron = _utc_cron_to_local(cron_expr)
+    logger.info("Cron timezone conversion: UTC %s -> local %s", cron_expr, local_cron)
 
     safe_message = message.replace("'", "'\\''")
     subcmd = "trigger" if smart else "send"
@@ -210,7 +260,7 @@ def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str
     else:
         cmd = actual_cmd
 
-    cron_line = f"{cron_expr} {cmd} {CRON_TAG}{reminder_id}|{mode_label}\n"
+    cron_line = f"{local_cron} {cmd} {CRON_TAG}{reminder_id}|{mode_label}|utc:{cron_expr}\n"
 
     existing = _get_crontab()
     lines = [l for l in existing.splitlines(True) if not _line_matches_id(l, reminder_id)]
@@ -241,9 +291,12 @@ def list_reminders() -> dict:
 
         max_runs = 0
         remaining = None
+        utc_cron = None
         for p in parts[2:]:
             if p.startswith("max:"):
                 max_runs = int(p.split(":")[1])
+            elif p.startswith("utc:"):
+                utc_cron = p[4:]
 
         if max_runs > 0:
             counter_file = COUNTER_DIR / f"{reminder_id}.count"
@@ -262,7 +315,8 @@ def list_reminders() -> dict:
 
         entry = {
             "id": reminder_id,
-            "cron": cron_expr,
+            "cron": utc_cron or cron_expr,
+            "cron_local": cron_expr,
             "message": message,
             "smart": mode == "smart",
         }
