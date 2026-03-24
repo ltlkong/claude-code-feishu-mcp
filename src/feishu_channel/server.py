@@ -37,13 +37,13 @@ else:
 TOOLS = [
     types.Tool(
         name="update_status",
-        description="Update the Feishu card with your current response text. Call this after EVERY message you send to the user.",
+        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing.",
         inputSchema={
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-                "status": {"type": "string", "description": "Short status shown in card header, e.g. 'Thinking...', 'Searching codebase...', 'Writing code...'"},
-                "text": {"type": "string", "description": "Your current response text"},
+                "status": {"type": "string", "description": "Short status shown in card header with emoji, e.g. 'Thinking...', 'Searching...', 'Writing code...'"},
+                "text": {"type": "string", "description": "Description of what you're currently doing"},
             },
             "required": ["request_id", "status", "text"],
         },
@@ -70,6 +70,30 @@ TOOLS = [
                 "file_path": {"type": "string", "description": "Absolute path to the file"},
             },
             "required": ["chat_id", "file_path"],
+        },
+    ),
+    types.Tool(
+        name="reply_image",
+        description="Send an image to a Feishu chat. The image is displayed inline (not as a file download). Use this for generated images, screenshots, etc.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Feishu chat to send to"},
+                "image_path": {"type": "string", "description": "Absolute path to the image file (png, jpg, etc.)"},
+            },
+            "required": ["chat_id", "image_path"],
+        },
+    ),
+    types.Tool(
+        name="reply_video",
+        description="Send a video to a Feishu chat. The video is displayed inline with a player (not as a file download). Auto-generates thumbnail from first frame.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Feishu chat to send to"},
+                "video_path": {"type": "string", "description": "Absolute path to the video file (mp4, mov, etc.)"},
+            },
+            "required": ["chat_id", "video_path"],
         },
     ),
     types.Tool(
@@ -164,6 +188,10 @@ class FeishuChannel:
                 result = await cards.finalize_card(arguments["request_id"], arguments["text"])
             elif name == "reply_file":
                 result = await cards.upload_and_send_file(arguments["chat_id"], arguments["file_path"])
+            elif name == "reply_image":
+                result = await channel._handle_reply_image(arguments["chat_id"], arguments["image_path"])
+            elif name == "reply_video":
+                result = await channel._handle_reply_video(arguments["chat_id"], arguments["video_path"])
             elif name == "reply_audio":
                 result = await channel._handle_reply_audio(arguments["chat_id"], arguments["text"])
             elif name == "create_reminder":
@@ -214,7 +242,7 @@ class FeishuChannel:
 
         # Handle media downloads
         message_type = meta["message_type"]
-        if message_type in ("image", "audio", "file"):
+        if message_type in ("image", "audio", "file", "media"):
             content = await self._download_media(content, message_type)
 
         # Pre-create the card (shows "thinking..." immediately)
@@ -237,6 +265,112 @@ class FeishuChannel:
             await self.cards.create_card(request_id, chat_id, "")
 
         await self._send_channel_notification(content, meta)
+
+    # ── Image reply ────────────────────────────────────────────────
+
+    async def _handle_reply_image(self, chat_id: str, image_path: str) -> dict:
+        """Upload an image and send it as an inline image message."""
+        import os
+        if not os.path.exists(image_path):
+            return {"status": "error", "message": f"File not found: {image_path}"}
+        try:
+            token = await self.cards._get_token()
+            # Step 1: Upload image to get image_key
+            with open(image_path, "rb") as f:
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/images",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"image_type": "message"},
+                    files={"image": (os.path.basename(image_path), f)},
+                )
+            upload_data = resp.json()
+            if upload_data.get("code") != 0:
+                return {"status": "error", "message": f"Image upload failed: {upload_data}"}
+            image_key = upload_data["data"]["image_key"]
+
+            # Step 2: Send image message
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "receive_id": chat_id,
+                    "msg_type": "image",
+                    "content": json.dumps({"image_key": image_key}),
+                },
+            )
+            send_data = resp.json()
+            if send_data.get("code") != 0:
+                return {"status": "error", "message": f"Image send failed: {send_data}"}
+            return {"status": "ok", "image_key": image_key}
+        except Exception as e:
+            logger.error("Image reply failed: %s", e)
+            return {"status": "error", "message": f"Image reply failed: {e}"}
+
+    # ── Video reply ────────────────────────────────────────────────
+
+    async def _handle_reply_video(self, chat_id: str, video_path: str) -> dict:
+        """Upload a video and send it as an inline video message with auto-generated thumbnail."""
+        import os
+        import subprocess as _sp
+        if not os.path.exists(video_path):
+            return {"status": "error", "message": f"File not found: {video_path}"}
+        try:
+            token = await self.cards._get_token()
+            temp_dir = self.settings.temp_dir
+
+            # Step 1: Extract thumbnail from first frame using ffmpeg
+            thumb_path = str(temp_dir / "video_thumb.jpg")
+            _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
+                     thumb_path, "-y"], capture_output=True, timeout=10)
+
+            # Step 2: Upload thumbnail image to get image_key
+            image_key = ""
+            if os.path.exists(thumb_path):
+                with open(thumb_path, "rb") as f:
+                    resp = await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/images",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"image_type": "message"},
+                        files={"image": ("thumb.jpg", f)},
+                    )
+                upload_data = resp.json()
+                if upload_data.get("code") == 0:
+                    image_key = upload_data["data"]["image_key"]
+
+            # Step 3: Upload video file to get file_key
+            file_name = os.path.basename(video_path)
+            with open(video_path, "rb") as f:
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"file_type": "mp4", "file_name": file_name},
+                    files={"file": (file_name, f)},
+                )
+            file_data = resp.json()
+            if file_data.get("code") != 0:
+                return {"status": "error", "message": f"Video upload failed: {file_data}"}
+            file_key = file_data["data"]["file_key"]
+
+            # Step 4: Send media message
+            content = {"file_key": file_key}
+            if image_key:
+                content["image_key"] = image_key
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "receive_id": chat_id,
+                    "msg_type": "media",
+                    "content": json.dumps(content),
+                },
+            )
+            send_data = resp.json()
+            if send_data.get("code") != 0:
+                return {"status": "error", "message": f"Video send failed: {send_data}"}
+            return {"status": "ok", "file_key": file_key}
+        except Exception as e:
+            logger.error("Video reply failed: %s", e)
+            return {"status": "error", "message": f"Video reply failed: {e}"}
 
     # ── Audio reply ────────────────────────────────────────────────
 
@@ -277,6 +411,13 @@ class FeishuChannel:
                     self.http, token, data["message_id"], data["file_key"], temp_dir
                 )
                 return f"[Audio file downloaded to {path}]"
+            elif message_type == "media":
+                file_name = data.get("file_name", "video.mp4")
+                path = await download_file(
+                    self.http, token, data["message_id"], data["file_key"],
+                    file_name, temp_dir
+                )
+                return f"[Video downloaded to {path}]"
             elif message_type == "file":
                 path = await download_file(
                     self.http, token, data["message_id"], data["file_key"],

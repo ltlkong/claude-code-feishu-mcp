@@ -19,22 +19,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
-    """Build a v2 (CardKit) card JSON with two sections.
+    """Build a v2 (CardKit) card JSON with header and content.
 
-    When action is empty (finalized state), only the content section is included.
+    When action is provided (streaming state), shown as card header with emoji.
+    When action is empty (finalized state), no header.
     """
     elements = []
 
-    if action:
-        elements.append({
-            "tag": "markdown",
-            "content": action,
-            "element_id": "action",
-        })
-        elements.append({"tag": "hr"})
-
-    # Fix literal "\n" sequences that arrive from MCP tool calls —
-    # replace them with real newlines so Feishu markdown renders line breaks.
+    # Fix literal "\n" sequences that arrive from MCP tool calls
     if text:
         text = text.replace("\\n", "\n")
 
@@ -49,6 +41,13 @@ def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
         "config": {"streaming_mode": streaming},
         "body": {"elements": elements},
     }
+
+    if action:
+        card["header"] = {
+            "title": {"tag": "plain_text", "content": f"⏳ {action}"},
+            "template": "indigo",
+        }
+
     return json.dumps(card, ensure_ascii=False)
 
 
@@ -336,7 +335,7 @@ class CardManager:
 
     async def create_card(self, request_id: str, chat_id: str, reply_to_message_id: str) -> None:
         """Create a new card in 'thinking...' state. Called when a notification is emitted."""
-        card_json = _build_card_json("", "思考中...", streaming=True)
+        card_json = _build_card_json("", "💭...", streaming=True)
         card_id = await self._cardkit_create(card_json)
         message_id = await self._send_card_message(chat_id, reply_to_message_id, card_json, card_id)
 
