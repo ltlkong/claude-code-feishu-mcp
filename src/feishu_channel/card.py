@@ -18,7 +18,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
+def _build_card_json(action: str, text: str, streaming: bool = True,
+                     emoji: str = "", template: str = "indigo") -> str:
     """Build a v2 (CardKit) card JSON with header and content.
 
     When action is provided (streaming state), shown as card header with emoji.
@@ -43,9 +44,10 @@ def _build_card_json(action: str, text: str, streaming: bool = True) -> str:
     }
 
     if action:
+        header_text = f"{emoji} {action}" if emoji else action
         card["header"] = {
-            "title": {"tag": "plain_text", "content": f"⏳ {action}"},
-            "template": "indigo",
+            "title": {"tag": "plain_text", "content": header_text},
+            "template": template,
         }
 
     return json.dumps(card, ensure_ascii=False)
@@ -346,7 +348,8 @@ class CardManager:
             card_id=card_id,
         )
 
-    async def update_card(self, request_id: str, status: str, text: str) -> dict:
+    async def update_card(self, request_id: str, status: str, text: str,
+                          emoji: str = "", template: str = "indigo") -> dict:
         """Update a card's status header and response text."""
         state = self._cards.get(request_id)
         if not state:
@@ -354,7 +357,7 @@ class CardManager:
             return {"status": "error", "message": f"No card for request_id {request_id}"}
 
         state.sequence += 1
-        card_json = _build_card_json(status, text, streaming=True)
+        card_json = _build_card_json(status, text, streaming=True, emoji=emoji, template=template)
         logger.debug("update_card: request_id=%s card_id=%s message_id=%s seq=%d",
                      request_id, state.card_id, state.message_id, state.sequence)
 

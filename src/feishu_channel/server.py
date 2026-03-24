@@ -42,8 +42,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-                "status": {"type": "string", "description": "Short status shown in card header with emoji, e.g. 'Thinking...', 'Searching...', 'Writing code...'"},
+                "status": {"type": "string", "description": "Short status shown in card header, e.g. 'Thinking...', 'Searching...', 'Writing code...'"},
                 "text": {"type": "string", "description": "Description of what you're currently doing"},
+                "emoji": {"type": "string", "description": "Emoji for the header, e.g. '🔍', '💻', '🎨', '⏳'. Choose based on what you're doing.", "default": "⏳"},
+                "template": {"type": "string", "description": "Header color theme: blue, wathet, turquoise, green, yellow, orange, red, carmine, violet, purple, indigo, grey, default", "default": "indigo"},
             },
             "required": ["request_id", "status", "text"],
         },
@@ -208,7 +210,9 @@ class FeishuChannel:
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             if name == "update_status":
-                result = await cards.update_card(arguments["request_id"], arguments["status"], arguments["text"])
+                result = await cards.update_card(
+                    arguments["request_id"], arguments["status"], arguments["text"],
+                    emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
             elif name == "reply":
                 result = await cards.finalize_card(arguments["request_id"], arguments["text"])
             elif name == "reply_file":
