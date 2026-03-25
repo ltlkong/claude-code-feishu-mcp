@@ -24,7 +24,7 @@ Messages arrive as `<channel source="feishu" ... request_id="...">`. MCP tools a
 - **Call `create_response` first** — this creates the card the user sees. No card appears until you call it.
 - **Call `update_status` before each step** — the user is remote; status is their only progress window.
 - **`reply()` is one-shot** — can only be called ONCE per request_id. Card is sealed after. Plan accordingly. If you skip `create_response`, `reply` auto-creates the card.
-- **If `update_status` or `reply` fails**, retry or use `reply_file` as fallback. Never assume the user saw a failed message.
+- **If `update_status` or `reply` fails**, don't retry the same request_id. Send a new message instead (`reply_file`, `reply_image`, or wait for the next incoming message's request_id). Never assume the user saw a failed message.
 - Match the user's language (Chinese → Chinese, English → English).
 - **Group chats: selective reply** — In group chats, you don't have to reply to every message. If a message doesn't need your response (people chatting with each other, not directed at you), just don't call any tools — no card will appear.
 

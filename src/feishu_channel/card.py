@@ -96,6 +96,8 @@ class CardManager:
         self._cards: dict[str, CardState] = {}
         # request_id -> (chat_id, reply_to_message_id) for deferred card creation
         self._pending: dict[str, tuple[str, str]] = {}
+        # request_id -> (chat_id, reply_to_message_id) — persists after card is finalized, for auto-recovery
+        self._origins: dict[str, tuple[str, str]] = {}
 
     async def _get_token(self) -> str:
         """Get cached tenant token (refresh every 90 min)."""
@@ -341,18 +343,28 @@ class CardManager:
         """Register a pending card (for group chats where card creation is deferred).
         The card will be created lazily when update_card or finalize_card is first called."""
         self._pending[request_id] = (chat_id, reply_to_message_id)
+        self._origins[request_id] = (chat_id, reply_to_message_id)
 
     def cancel_pending(self, request_id: str) -> None:
         """Cancel a pending card (when skip_reply is called)."""
         self._pending.pop(request_id, None)
 
     async def _ensure_card(self, request_id: str) -> bool:
-        """Ensure a card exists for the request_id. Creates it lazily if pending."""
+        """Ensure a card exists for the request_id.
+        Tries: 1) existing card, 2) pending registration, 3) auto-recovery from origins.
+        Auto-recovery creates a fresh card when the original was lost (e.g. reply already called)."""
         if request_id in self._cards:
             return True
         pending = self._pending.pop(request_id, None)
         if pending:
             chat_id, reply_to_message_id = pending
+            await self.create_card(request_id, chat_id, reply_to_message_id)
+            return True
+        # Auto-recovery: card state gone but we know the chat — create a fresh card
+        origin = self._origins.get(request_id)
+        if origin:
+            chat_id, reply_to_message_id = origin
+            logger.info("_ensure_card: auto-recovering card for request_id=%s in chat=%s", request_id, chat_id)
             await self.create_card(request_id, chat_id, reply_to_message_id)
             return True
         return False
@@ -372,7 +384,9 @@ class CardManager:
 
     async def update_card(self, request_id: str, status: str, text: str,
                           emoji: str = "", template: str = "indigo") -> dict:
-        """Update a card's status header and response text."""
+        """Update a card's status header and response text. Auto-recovers if card was lost."""
+        if request_id not in self._cards:
+            await self._ensure_card(request_id)
         state = self._cards.get(request_id)
         if not state:
             logger.warning("update_card: no card for request_id %s", request_id)
