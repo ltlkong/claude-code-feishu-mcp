@@ -31,5 +31,8 @@ Thumbs.db
 # Workspace (generated docs, skills data, temp outputs)
 workspace/docs/
 
+# User profiles (per-user per-chat context)
+profiles/
+
 # Temp files
 /tmp/

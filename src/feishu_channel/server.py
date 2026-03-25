@@ -204,6 +204,19 @@ TOOLS = [
             "required": ["title"],
         },
     ),
+    types.Tool(
+        name="update_profile",
+        description="Update a user's profile for a specific chat context. Profiles are short markdown notes that help tailor responses per user per chat. Call this when you learn something new about a user. Keep profiles concise — they are injected into every message.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "The chat_id (group or p2p)"},
+                "user_id": {"type": "string", "description": "The user's open_id (from message meta)"},
+                "profile": {"type": "string", "description": "Complete profile in markdown. Keep SHORT (under 500 chars). Include: name, key traits, preferences, relationship context, communication style notes."},
+            },
+            "required": ["chat_id", "user_id", "profile"],
+        },
+    ),
 ]
 
 
@@ -291,6 +304,9 @@ class FeishuChannel:
                 result = await channel._handle_create_bitable(
                     arguments["title"], arguments.get("fields", []), arguments.get("records", []),
                     arguments.get("views", []), arguments.get("chat_id", ""))
+            elif name == "update_profile":
+                result = channel._handle_update_profile(
+                    arguments["chat_id"], arguments["user_id"], arguments["profile"])
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -387,6 +403,12 @@ class FeishuChannel:
 
         # Defer card creation — card appears only when Claude calls update_status or reply
         self.cards.register_pending(last_request_id, chat_id, last_message_id)
+
+        # Inject user profile into meta (empty string signals "new user, create profile")
+        user_id = last_meta.get("user_id", "")
+        if user_id:
+            profile = self._load_profile(chat_id, user_id)
+            last_meta["user_profile"] = profile  # always inject, even if empty
 
         # Merge all buffered messages into ONE notification
         # Claude sees all messages at once as a single combined input
@@ -646,6 +668,29 @@ class FeishuChannel:
         except Exception as e:
             logger.error("TTS failed: %s", e)
             return {"status": "error", "message": f"TTS failed: {e}"}
+
+    # ── User profiles ──────────────────────────────────────────
+
+    _PROFILES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "profiles")
+
+    def _handle_update_profile(self, chat_id: str, user_id: str, profile: str) -> dict:
+        """Write/update a user profile markdown file."""
+        os.makedirs(self._PROFILES_DIR, exist_ok=True)
+        filename = f"{chat_id}_{user_id}.md"
+        filepath = os.path.join(self._PROFILES_DIR, filename)
+        with open(filepath, "w") as f:
+            f.write(profile)
+        return {"status": "ok", "file": filename}
+
+    @staticmethod
+    def _load_profile(chat_id: str, user_id: str) -> str:
+        """Load a user's profile for a given chat. Returns empty string if none."""
+        profiles_dir = os.path.join(os.path.dirname(__file__), "..", "..", "profiles")
+        filepath = os.path.join(profiles_dir, f"{chat_id}_{user_id}.md")
+        if os.path.isfile(filepath):
+            with open(filepath) as f:
+                return f.read().strip()
+        return ""
 
     # ── Feishu Doc / Spreadsheet creation ───────────────────────
 
