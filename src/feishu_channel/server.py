@@ -36,19 +36,8 @@ else:
 
 TOOLS = [
     types.Tool(
-        name="create_response",
-        description="Create a response card in the chat. Call this BEFORE update_status when you decide to respond. In group chats, only call this when you actually want to reply — skip it to stay silent. For simple replies you can skip this and call reply() directly.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-            },
-            "required": ["request_id"],
-        },
-    ),
-    types.Tool(
         name="update_status",
-        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing. Requires create_response first.",
+        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing. Auto-creates card if needed.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -238,9 +227,7 @@ class FeishuChannel:
         self._user_names: dict[str, str] = {}
 
         # Debounce: merge rapid messages from the same chat into one card
-        self._debounce_delay = 2.0  # seconds
-        self._debounce_pending: dict[str, asyncio.TimerHandle | None] = {}  # chat_id -> timer
-        self._debounce_buffer: dict[str, list[tuple[str, str, dict]]] = {}  # chat_id -> [(content, request_id, meta)]
+        # (debounce removed — deferred card creation handles rapid messages)
 
         # MCP server — decorator-based handler registration
         self.server = Server(name="feishu", version="0.1.0", instructions=INSTRUCTIONS)
@@ -264,10 +251,7 @@ class FeishuChannel:
 
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-            if name == "create_response":
-                ok = await cards._ensure_card(arguments["request_id"])
-                result = {"status": "ok"} if ok else {"status": "error", "message": "No pending card for this request_id"}
-            elif name == "update_status":
+            if name == "update_status":
                 result = await cards.update_card(
                     arguments["request_id"], arguments["status"], arguments["text"],
                     emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
@@ -357,7 +341,7 @@ class FeishuChannel:
         return self._user_names.get(user_id, user_id)
 
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
-        """Called when a Feishu message arrives. Debounces rapid messages from the same chat."""
+        """Called when a Feishu message arrives. Sends notification directly to Claude."""
         mark_activity()
         chat_id = meta["chat_id"]
         message_id = meta.get("message_id", "")
@@ -367,61 +351,23 @@ class FeishuChannel:
         if user_id:
             meta["sender_name"] = await self._resolve_user_name(user_id, chat_id)
 
-        # Handle media downloads immediately (don't delay file saves)
+        # Handle media downloads
         message_type = meta["message_type"]
         if message_type in ("image", "audio", "file", "media"):
             content = await self._download_media(content, message_type, message_id)
         elif message_type == "post":
             content = await self._process_post_content(content, message_id)
 
-        # Buffer the message
-        if chat_id not in self._debounce_buffer:
-            self._debounce_buffer[chat_id] = []
-        self._debounce_buffer[chat_id].append((content, request_id, meta))
+        # Defer card creation — card appears only when Claude calls create_response/update_status/reply
+        self.cards.register_pending(request_id, chat_id, message_id)
 
-        # Cancel existing timer for this chat
-        if chat_id in self._debounce_pending and self._debounce_pending[chat_id] is not None:
-            self._debounce_pending[chat_id].cancel()
-
-        # Set a new timer — fires after debounce_delay seconds of silence
-        loop = asyncio.get_running_loop()
-        self._debounce_pending[chat_id] = loop.call_later(
-            self._debounce_delay,
-            lambda cid=chat_id: asyncio.ensure_future(self._flush_debounce(cid)),
-        )
-
-    async def _flush_debounce(self, chat_id: str) -> None:
-        """Flush buffered messages for a chat — create one card, send ONE merged notification."""
-        messages = self._debounce_buffer.pop(chat_id, [])
-        self._debounce_pending.pop(chat_id, None)
-        if not messages:
-            return
-
-        # Use the LAST message's request_id and message_id for the card
-        last_content, last_request_id, last_meta = messages[-1]
-        last_message_id = last_meta.get("message_id", "")
-
-        # Defer card creation — card appears only when Claude calls update_status or reply
-        self.cards.register_pending(last_request_id, chat_id, last_message_id)
-
-        # Inject user profile into meta (empty string signals "new user, create profile")
-        user_id = last_meta.get("user_id", "")
+        # Inject user profile into meta
         if user_id:
             profile = self._load_profile(chat_id, user_id)
-            last_meta["user_profile"] = profile  # always inject, even if empty
+            meta["user_profile"] = profile  # always inject, even if empty
 
-        # Merge all buffered messages into ONE notification
-        # Claude sees all messages at once as a single combined input
-        if len(messages) == 1:
-            # Single message — send as-is
-            await self._send_channel_notification(last_content, last_meta)
-        else:
-            # Multiple messages — combine contents, use last meta (has the active request_id)
-            merged_parts = []
-            for content, request_id, meta in messages:
-                merged_parts.append(content)
-            merged_content = "\n".join(merged_parts)
-            await self._send_channel_notification(merged_content, last_meta)
+        # Send notification to Claude
+        await self._send_channel_notification(content, meta)
 
     async def _on_feishu_card_action(self, content: str, meta: dict) -> None:
         """Called when a card action (button click, form submit) arrives."""
