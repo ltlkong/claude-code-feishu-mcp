@@ -201,12 +201,16 @@ class FeishuListener:
         message_type, content = parse_message_content(msg)
         request_id = str(uuid.uuid4())
 
+        from datetime import datetime, timezone
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
         meta = {
             "user_id": sender_id,
             "chat_id": msg.message.chat_id,
             "chat_type": msg.message.chat_type or "p2p",  # "p2p" or "group"
             "sender_name": getattr(msg.sender, "sender_id", None) and msg.sender.sender_id.open_id or "unknown",
             "message_type": message_type,
+            "message_time": message_time,
             "request_id": request_id,
             "message_id": msg.message.message_id,
         }
