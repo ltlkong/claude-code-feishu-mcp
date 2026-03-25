@@ -36,8 +36,19 @@ else:
 
 TOOLS = [
     types.Tool(
+        name="create_response",
+        description="Create a response card in the chat. Call this BEFORE update_status when you decide to respond. In group chats, only call this when you actually want to reply — skip it to stay silent. For simple replies you can skip this and call reply() directly.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "The request_id from the inbound message"},
+            },
+            "required": ["request_id"],
+        },
+    ),
+    types.Tool(
         name="update_status",
-        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing.",
+        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing. Requires create_response first.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -240,7 +251,10 @@ class FeishuChannel:
 
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-            if name == "update_status":
+            if name == "create_response":
+                ok = await cards._ensure_card(arguments["request_id"])
+                result = {"status": "ok"} if ok else {"status": "error", "message": "No pending card for this request_id"}
+            elif name == "update_status":
                 result = await cards.update_card(
                     arguments["request_id"], arguments["status"], arguments["text"],
                     emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
@@ -371,8 +385,8 @@ class FeishuChannel:
         last_content, last_request_id, last_meta = messages[-1]
         last_message_id = last_meta.get("message_id", "")
 
-        # Create ONE card for the batch
-        await self.cards.create_card(last_request_id, chat_id, last_message_id)
+        # Defer card creation — card appears only when Claude calls update_status or reply
+        self.cards.register_pending(last_request_id, chat_id, last_message_id)
 
         # Merge all buffered messages into ONE notification
         # Claude sees all messages at once as a single combined input

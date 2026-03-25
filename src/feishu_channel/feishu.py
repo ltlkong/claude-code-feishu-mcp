@@ -204,6 +204,7 @@ class FeishuListener:
         meta = {
             "user_id": sender_id,
             "chat_id": msg.message.chat_id,
+            "chat_type": msg.message.chat_type or "p2p",  # "p2p" or "group"
             "sender_name": getattr(msg.sender, "sender_id", None) and msg.sender.sender_id.open_id or "unknown",
             "message_type": message_type,
             "request_id": request_id,

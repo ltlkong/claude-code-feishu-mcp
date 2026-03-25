@@ -94,6 +94,8 @@ class CardManager:
         self._token_time: float = 0
         # request_id -> CardState
         self._cards: dict[str, CardState] = {}
+        # request_id -> (chat_id, reply_to_message_id) for deferred card creation
+        self._pending: dict[str, tuple[str, str]] = {}
 
     async def _get_token(self) -> str:
         """Get cached tenant token (refresh every 90 min)."""
@@ -335,6 +337,26 @@ class CardManager:
         )
         logger.info("adopt_card: request_id=%s message_id=%s", request_id, message_id)
 
+    def register_pending(self, request_id: str, chat_id: str, reply_to_message_id: str) -> None:
+        """Register a pending card (for group chats where card creation is deferred).
+        The card will be created lazily when update_card or finalize_card is first called."""
+        self._pending[request_id] = (chat_id, reply_to_message_id)
+
+    def cancel_pending(self, request_id: str) -> None:
+        """Cancel a pending card (when skip_reply is called)."""
+        self._pending.pop(request_id, None)
+
+    async def _ensure_card(self, request_id: str) -> bool:
+        """Ensure a card exists for the request_id. Creates it lazily if pending."""
+        if request_id in self._cards:
+            return True
+        pending = self._pending.pop(request_id, None)
+        if pending:
+            chat_id, reply_to_message_id = pending
+            await self.create_card(request_id, chat_id, reply_to_message_id)
+            return True
+        return False
+
     async def create_card(self, request_id: str, chat_id: str, reply_to_message_id: str) -> None:
         """Create a new card in 'thinking...' state. Called when a notification is emitted."""
         card_json = _build_card_json("", "💭...", streaming=True)
@@ -385,6 +407,7 @@ class CardManager:
 
     async def finalize_card(self, request_id: str, text: str) -> dict:
         """Finalize a card: replace with final content, disable streaming."""
+        await self._ensure_card(request_id)
         state = self._cards.get(request_id)
         if not state:
             return {"status": "error", "message": f"No card for request_id {request_id}"}
