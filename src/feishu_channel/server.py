@@ -248,7 +248,7 @@ TOOLS = [
     ),
     types.Tool(
         name="manage_task",
-        description="Manage Feishu Tasks (飞书任务). Actions: create (new task), list (my tasks), update (modify task), complete (mark done).",
+        description="Manage Feishu Tasks (飞书任务) via v1 API. Actions: create (new task), list (bot-created tasks), update (modify task), complete (mark done). Note: list only shows tasks created by the bot, not all user tasks.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -263,13 +263,12 @@ TOOLS = [
         },
     ),
     types.Tool(
-        name="search_wiki",
-        description="Search Feishu knowledge base (知识库/Wiki). Returns matching wiki nodes with titles, URLs, and document types. Use for finding company docs, knowledge articles, and wiki pages.",
+        name="search_docs",
+        description="Search all Feishu cloud documents (云文档) by keyword. Covers docs, sheets, bitables — everything in your cloud drive. Does NOT search wiki knowledge bases (requires user OAuth). Returns titles, URLs, and document types.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search keyword (max 50 chars)"},
-                "space_id": {"type": "string", "description": "Optional: specific knowledge space ID. Omit to search all spaces.", "default": ""},
             },
             "required": ["query"],
         },
@@ -359,8 +358,8 @@ class FeishuChannel:
             elif name == "update_profile":
                 result = channel._handle_update_profile(
                     arguments["chat_id"], arguments["user_id"], arguments["profile"])
-            elif name == "search_wiki":
-                result = await channel._handle_search_wiki(
+            elif name == "search_docs":
+                result = await channel._handle_search_docs(
                     arguments["query"], arguments.get("space_id", ""))
             elif name == "manage_task":
                 result = await channel._handle_manage_task(
@@ -783,7 +782,7 @@ class FeishuChannel:
 
     # ── Wiki search ───────────────────────────────────────────
 
-    async def _handle_search_wiki(self, query: str, space_id: str = "") -> dict:
+    async def _handle_search_docs(self, query: str, space_id: str = "") -> dict:
         """Search Feishu docs and knowledge base. Uses suite/docs-api/search which works with tenant_access_token."""
         try:
             token = await self.cards._get_token()
