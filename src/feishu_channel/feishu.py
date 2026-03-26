@@ -55,7 +55,7 @@ if _original_handle:
 class _DedupCache:
     """OrderedDict-based dedup with TTL. Thread-safe."""
 
-    def __init__(self, max_size: int = 1000, ttl_seconds: float = 60):
+    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600):
         self._cache: OrderedDict[str, float] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl_seconds
