@@ -96,6 +96,8 @@ Users are on Feishu, not this machine. Files they send land in `/tmp/feishu-chan
 
 Processing: ZIP → extract first. PDF → Read with `pages` param. Images → Read directly. Videos → use `workspace/skills/video-viewer/SKILL.md` (ffmpeg keyframe extraction).
 
+**Voice messages:** `reply_audio(chat_id, text)` — converts text to speech via ElevenLabs TTS and sends as a Feishu audio message. Use for playful voice replies or when voice feels more natural. Users can also send voice messages to you (transcribed automatically).
+
 ## User Profiles
 
 Every message carries `user_profile` — use it to tailor tone and context.
