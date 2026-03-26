@@ -263,6 +263,19 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="search_image",
+        description="Search for images or GIFs to send in chat. Use 'photo' for high-quality photos (landscapes, food, business, etc.), 'gif' for animated GIFs/stickers/memes. Returns image URLs ready for download and reply_image.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword (English works best)"},
+                "type": {"type": "string", "enum": ["photo", "gif"], "description": "photo=Pexels high-quality photos, gif=Tenor animated GIFs", "default": "photo"},
+                "count": {"type": "integer", "description": "Number of results (1-5)", "default": 1},
+            },
+            "required": ["query"],
+        },
+    ),
+    types.Tool(
         name="search_docs",
         description="Search all Feishu cloud documents (云文档) by keyword. Covers docs, sheets, bitables — everything in your cloud drive. Does NOT search wiki knowledge bases (requires user OAuth). Returns titles, URLs, and document types.",
         inputSchema={
@@ -361,6 +374,9 @@ class FeishuChannel:
             elif name == "search_docs":
                 result = await channel._handle_search_docs(
                     arguments["query"], arguments.get("space_id", ""))
+            elif name == "search_image":
+                result = await channel._handle_search_image(
+                    arguments["query"], arguments.get("type", "photo"), arguments.get("count", 1))
             elif name == "manage_task":
                 result = await channel._handle_manage_task(
                     arguments["action"], arguments.get("summary", ""), arguments.get("description", ""),
@@ -820,6 +836,56 @@ class FeishuChannel:
             return {"status": "ok", "count": len(results), "total": total, "results": results}
         except Exception as e:
             return {"status": "error", "message": f"Wiki search error: {e}"}
+
+    # ── Image search (Pexels + Tenor) ──────────────────────────
+
+    async def _handle_search_image(self, query: str, img_type: str = "photo", count: int = 1) -> dict:
+        """Search for photos (Pexels) or GIFs (Tenor) and optionally download."""
+        count = min(max(count, 1), 5)
+        try:
+            if img_type == "gif":
+                # Tenor API (Google, free)
+                resp = await self.http.get(
+                    "https://tenor.googleapis.com/v2/search",
+                    params={"q": query, "key": "AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ",
+                            "limit": count, "media_filter": "gif"},
+                )
+                data = resp.json()
+                results = []
+                for r in data.get("results", [])[:count]:
+                    media = r.get("media_formats", {})
+                    gif_url = media.get("gif", {}).get("url", "")
+                    tiny_url = media.get("tinygif", {}).get("url", "")
+                    results.append({
+                        "title": r.get("content_description", ""),
+                        "url": gif_url or tiny_url,
+                        "preview": tiny_url or gif_url,
+                    })
+                return {"status": "ok", "type": "gif", "count": len(results), "results": results}
+
+            else:
+                # Pexels API
+                pexels_key = os.environ.get("PEXELS_API_KEY", "")
+                if not pexels_key:
+                    return {"status": "error", "message": "PEXELS_API_KEY not set"}
+                resp = await self.http.get(
+                    "https://api.pexels.com/v1/search",
+                    headers={"Authorization": pexels_key},
+                    params={"query": query, "per_page": count, "size": "medium"},
+                )
+                data = resp.json()
+                results = []
+                for p in data.get("photos", [])[:count]:
+                    results.append({
+                        "title": p.get("alt", ""),
+                        "url": p.get("src", {}).get("large", ""),
+                        "preview": p.get("src", {}).get("medium", ""),
+                        "photographer": p.get("photographer", ""),
+                    })
+                return {"status": "ok", "type": "photo", "count": len(results), "results": results}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Image search error: {e}"}
 
     # ── Task management ────────────────────────────────────────
 
