@@ -15,7 +15,7 @@ from typing import Callable, Awaitable
 
 import httpx
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, P2ImMessageReactionCreatedV1
+from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, P2ImMessageReactionCreatedV1, P2ImMessageRecalledV1
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger, P2CardActionTriggerResponse, CallBackToast,
 )
@@ -305,6 +305,38 @@ class FeishuListener:
                 self._on_message(content, request_id, meta), self._loop
             )
 
+    def _handle_recall(self, data: P2ImMessageRecalledV1) -> None:
+        """Handle message recall events — someone unsent a message."""
+        event = data.event
+        if not event:
+            return
+
+        message_id = event.message_id or ""
+        chat_id = event.chat_id or ""
+        content = f"[Message recalled: {message_id}]"
+        request_id = str(uuid.uuid4())
+
+        from datetime import datetime, timezone
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        meta = {
+            "user_id": "",
+            "chat_id": chat_id,
+            "chat_type": "unknown",
+            "sender_name": "",
+            "message_type": "recall",
+            "message_time": message_time,
+            "request_id": request_id,
+            "message_id": message_id,
+            "root_id": "",
+            "parent_id": "",
+        }
+
+        if hasattr(self, "_loop") and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_message(content, request_id, meta), self._loop
+            )
+
     def start(self, loop) -> None:
         """Start the WebSocket listener in a background thread.
 
@@ -322,6 +354,7 @@ class FeishuListener:
             lark.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self._handle_message)
             .register_p2_im_message_reaction_created_v1(self._handle_reaction)
+            .register_p2_im_message_recalled_v1(self._handle_recall)
             .register_p2_card_action_trigger(self._handle_card_action)
             .build()
         )
