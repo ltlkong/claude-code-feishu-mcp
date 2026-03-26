@@ -903,7 +903,13 @@ class FeishuChannel:
             if action == "create":
                 if not summary:
                     return {"status": "error", "message": "summary required"}
-                body: dict = {"summary": summary}
+                body: dict = {
+                    "summary": summary,
+                    "origin": {
+                        "platform_i18n_name": '{"zh_cn": "小白", "en_us": "Xiaobai"}',
+                        "href": {"url": "", "title": ""},
+                    },
+                }
                 if description:
                     body["description"] = description
                 if due:
