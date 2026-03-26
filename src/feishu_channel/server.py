@@ -830,7 +830,7 @@ class FeishuChannel:
         try:
             token = await self.cards._get_token()
             headers = {"Authorization": f"Bearer {token}"}
-            base_url = "https://open.feishu.cn/open-apis/task/v2/tasks"
+            base_url = "https://open.feishu.cn/open-apis/task/v1/tasks"
 
             if action == "create":
                 if not summary:
@@ -839,7 +839,7 @@ class FeishuChannel:
                 if description:
                     body["description"] = description
                 if due:
-                    body["due"] = {"timestamp": due, "is_all_day": False}
+                    body["due"] = {"time": due, "is_all_day": False}
                 resp = await self.http.post(base_url, headers=headers, json=body)
                 data = resp.json()
                 if data.get("code") == 0:
@@ -857,8 +857,9 @@ class FeishuChannel:
                         tasks.append({
                             "task_id": t.get("id", ""),
                             "summary": t.get("summary", ""),
-                            "completed": t.get("completed_at", "") != "",
-                            "due": t.get("due", {}).get("timestamp", "") if t.get("due") else "",
+                            "description": t.get("description", ""),
+                            "completed": t.get("complete_time", "0") != "0",
+                            "due": t.get("due", {}).get("time", "") if t.get("due") else "",
                         })
                     return {"status": "ok", "count": len(tasks), "tasks": tasks}
                 return {"status": "error", "message": data.get("msg", "")}
@@ -882,7 +883,6 @@ class FeishuChannel:
             elif action == "complete":
                 if not task_id:
                     return {"status": "error", "message": "task_id required"}
-                import time as _time
                 resp = await self.http.post(f"{base_url}/{task_id}/complete", headers=headers, json={})
                 data = resp.json()
                 if data.get("code") == 0:
