@@ -216,9 +216,11 @@ class FeishuListener:
             "message_id": msg.message.message_id,
         }
 
-        # Track active chats for message recovery
+        # Track active chats and last message time for recovery
         if hasattr(self, "_active_chats"):
             self._active_chats.add(msg.message.chat_id)
+        if hasattr(self, "_last_ws_msg_time") and msg.message.create_time:
+            self._last_ws_msg_time[msg.message.chat_id] = str(msg.message.create_time)
 
         # Fire async callback — we're in lark-oapi's thread, schedule on MCP's event loop
         if hasattr(self, "_loop") and self._loop:
@@ -257,6 +259,7 @@ class FeishuListener:
         """
         self._loop = loop
         self._active_chats: set[str] = set()  # chat_ids we've seen messages from
+        self._last_ws_msg_time: dict[str, str] = {}  # chat_id -> last message create_time (ms timestamp)
         self._http = httpx.AsyncClient(timeout=30)
         self._token: str | None = None
         self._token_time: float = 0
@@ -314,23 +317,37 @@ class FeishuListener:
         return []
 
     async def _recover_missed_messages(self):
-        """Check active chats for any messages missed during WebSocket gaps."""
+        """Check active chats for any messages missed during WebSocket gaps.
+        Only processes messages NEWER than the last WebSocket-received message per chat."""
         if not self._active_chats:
             return
 
         recovered = 0
         for chat_id in list(self._active_chats):
+            last_ws_time = self._last_ws_msg_time.get(chat_id)
+            if not last_ws_time:
+                continue  # No baseline yet — skip until we've received at least one WS message
+
             messages = await self._pull_recent_messages(chat_id, count=5)
             for msg in messages:
                 msg_id = msg.get("message_id", "")
-                if not msg_id or self._dedup.seen(msg_id):
+                if not msg_id:
                     continue
 
-                # New message not seen via WebSocket — process it
+                # Only process messages NEWER than last WebSocket message
+                msg_create_time = msg.get("create_time", "0")
+                if msg_create_time <= last_ws_time:
+                    continue  # This message is older than or equal to our last WS message — skip
+
+                # Check dedup (still useful as secondary filter)
+                if self._dedup.seen(msg_id):
+                    continue
+
+                # Skip bot's own messages
                 sender = msg.get("sender", {})
                 sender_id = sender.get("id", "")
                 if sender.get("sender_type") == "app":
-                    continue  # Skip bot's own messages
+                    continue
                 if not self._is_allowed(sender_id):
                     continue
 
@@ -360,7 +377,8 @@ class FeishuListener:
                     "message_id": msg_id,
                 }
 
-                logger.info("Recovered missed message: %s in %s", msg_id, chat_id)
+                logger.info("Recovered missed message: %s in %s (create_time=%s > last_ws=%s)",
+                           msg_id, chat_id, msg_create_time, last_ws_time)
                 if hasattr(self, "_loop") and self._loop:
                     asyncio.run_coroutine_threadsafe(
                         self._on_message(content, request_id, meta), self._loop
