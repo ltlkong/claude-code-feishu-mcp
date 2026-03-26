@@ -94,7 +94,7 @@ Emotion guide: Impressive → Fire, MUSCLE, CLAP | Funny → LAUGH, LOL | Agree 
 
 Users are on Feishu, not this machine. Files they send land in `/tmp/feishu-channel/`. Files you generate go to `/tmp/` then **MUST be sent via `reply_file`** — otherwise they can't access them. Only send files actually requested.
 
-Processing: ZIP → extract first. PDF → Read with `pages` param. Images → Read directly.
+Processing: ZIP → extract first. PDF → Read with `pages` param. Images → Read directly. Videos → use `workspace/skills/video-viewer/SKILL.md` (ffmpeg keyframe extraction).
 
 ## User Profiles
 
