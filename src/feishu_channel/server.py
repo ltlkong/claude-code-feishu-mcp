@@ -231,6 +231,22 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="bitable_records",
+        description="CRUD operations on Feishu Bitable (多维表格) records. Actions: list (read records with optional filter), create (add records), update (modify records), delete (remove records).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "create", "update", "delete"], "description": "Operation to perform"},
+                "app_token": {"type": "string", "description": "Bitable app token (from URL: feishu.cn/base/{app_token})"},
+                "table_id": {"type": "string", "description": "Table ID within the bitable"},
+                "records": {"type": "array", "description": "For create: [{fields: {name: val}}]. For update: [{record_id: id, fields: {name: val}}]. For delete: [record_id, ...].", "items": {"type": "object"}, "default": []},
+                "filter": {"type": "string", "description": "For list: filter string e.g. 'AND(CurrentValue.[Status]=\"Done\")'", "default": ""},
+                "page_size": {"type": "integer", "description": "For list: records per page (max 500)", "default": 20},
+            },
+            "required": ["action", "app_token", "table_id"],
+        },
+    ),
+    types.Tool(
         name="search_wiki",
         description="Search Feishu knowledge base (知识库/Wiki). Returns matching wiki nodes with titles, URLs, and document types. Use for finding company docs, knowledge articles, and wiki pages.",
         inputSchema={
@@ -330,6 +346,10 @@ class FeishuChannel:
             elif name == "search_wiki":
                 result = await channel._handle_search_wiki(
                     arguments["query"], arguments.get("space_id", ""))
+            elif name == "bitable_records":
+                result = await channel._handle_bitable_records(
+                    arguments["action"], arguments["app_token"], arguments["table_id"],
+                    arguments.get("records", []), arguments.get("filter", ""), arguments.get("page_size", 20))
             elif name == "read_messages":
                 result = await channel._handle_read_messages(
                     arguments["chat_id"], arguments.get("count", 10))
@@ -781,6 +801,85 @@ class FeishuChannel:
             return {"status": "ok", "count": len(results), "total": total, "results": results}
         except Exception as e:
             return {"status": "error", "message": f"Wiki search error: {e}"}
+
+    # ── Bitable CRUD ───────────────────────────────────────────
+
+    async def _handle_bitable_records(self, action: str, app_token: str, table_id: str,
+                                       records: list = None, filter_str: str = "", page_size: int = 20) -> dict:
+        """CRUD operations on Bitable records."""
+        try:
+            token = await self.cards._get_token()
+            base_url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+            headers = {"Authorization": f"Bearer {token}"}
+
+            if action == "list":
+                params = {"page_size": min(page_size, 500)}
+                if filter_str:
+                    params["filter"] = filter_str
+                resp = await self.http.get(base_url, headers=headers, params=params)
+                data = resp.json()
+                if data.get("code") != 0:
+                    return {"status": "error", "message": data.get("msg", "")}
+                items = data.get("data", {}).get("items", [])
+                return {
+                    "status": "ok",
+                    "total": data.get("data", {}).get("total", 0),
+                    "records": [{"record_id": r.get("record_id"), "fields": r.get("fields", {})} for r in items]
+                }
+
+            elif action == "create":
+                if not records:
+                    return {"status": "error", "message": "records required for create"}
+                created = []
+                for rec in records:
+                    fields = rec if not isinstance(rec, dict) or "fields" not in rec else rec["fields"]
+                    resp = await self.http.post(base_url, headers=headers, json={"fields": fields})
+                    data = resp.json()
+                    if data.get("code") == 0:
+                        r = data.get("data", {}).get("record", {})
+                        created.append({"record_id": r.get("record_id"), "fields": r.get("fields", {})})
+                    else:
+                        created.append({"error": data.get("msg", "")})
+                return {"status": "ok", "created": len([c for c in created if "record_id" in c]), "records": created}
+
+            elif action == "update":
+                if not records:
+                    return {"status": "error", "message": "records required for update (each needs record_id + fields)"}
+                updated = []
+                for rec in records:
+                    rid = rec.get("record_id", "")
+                    fields = rec.get("fields", {})
+                    if not rid:
+                        updated.append({"error": "missing record_id"})
+                        continue
+                    resp = await self.http.put(f"{base_url}/{rid}", headers=headers, json={"fields": fields})
+                    data = resp.json()
+                    if data.get("code") == 0:
+                        r = data.get("data", {}).get("record", {})
+                        updated.append({"record_id": r.get("record_id"), "fields": r.get("fields", {})})
+                    else:
+                        updated.append({"record_id": rid, "error": data.get("msg", "")})
+                return {"status": "ok", "updated": len([u for u in updated if "error" not in u]), "records": updated}
+
+            elif action == "delete":
+                if not records:
+                    return {"status": "error", "message": "records required for delete (list of record_ids)"}
+                # records can be list of strings or list of dicts with record_id
+                ids = [r if isinstance(r, str) else r.get("record_id", "") for r in records]
+                ids = [i for i in ids if i]
+                if not ids:
+                    return {"status": "error", "message": "no valid record_ids"}
+                resp = await self.http.post(f"{base_url}/batch_delete", headers=headers, json={"records": ids})
+                data = resp.json()
+                if data.get("code") == 0:
+                    return {"status": "ok", "deleted": len(ids)}
+                return {"status": "error", "message": data.get("msg", "")}
+
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}"}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Bitable error: {e}"}
 
     # ── Message history & reactions ─────────────────────────────
 
