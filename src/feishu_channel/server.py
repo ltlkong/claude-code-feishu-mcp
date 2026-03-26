@@ -20,7 +20,7 @@ from mcp import types
 from .config import Settings
 from .card import CardManager
 from .feishu import FeishuListener
-from .media import cleanup_old_files, download_image, download_audio, download_file, text_to_speech
+from .media import cleanup_old_files, download_image, download_audio, download_file, text_to_speech, transcribe_audio
 from .reminder import create_reminder, list_reminders, delete_reminder, SCHEDULED_DIR
 from .heartbeat import heartbeat_loop, mark_activity, configure_inactivity
 
@@ -1594,6 +1594,17 @@ class FeishuChannel:
                     path = await download_audio(
                         self.http, token, msg_id, data["file_key"], temp_dir
                     )
+                    # Auto-transcribe if ElevenLabs is configured
+                    transcript = ""
+                    if self.settings.elevenlabs_api_key:
+                        try:
+                            transcript = await transcribe_audio(
+                                self.http, self.settings.elevenlabs_api_key, path
+                            )
+                        except Exception as e:
+                            logger.warning("Audio transcription failed: %s", e)
+                    if transcript:
+                        return f"[Voice message transcription: {transcript}]"
                     return f"[Audio file downloaded to {path}]"
                 elif message_type == "media":
                     file_name = data.get("file_name", "video.mp4")
