@@ -714,35 +714,41 @@ class FeishuChannel:
     # ── Wiki search ───────────────────────────────────────────
 
     async def _handle_search_wiki(self, query: str, space_id: str = "") -> dict:
-        """Search Feishu knowledge base (Wiki) for matching nodes."""
+        """Search Feishu docs and knowledge base. Uses suite/docs-api/search which works with tenant_access_token."""
         try:
             token = await self.cards._get_token()
-            body = {"query": query[:50]}
-            if space_id:
-                body["space_id"] = space_id
+            body: dict = {"search_key": query[:50], "count": 20, "offset": 0}
 
             resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/wiki/v2/nodes/search",
+                "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
                 headers={"Authorization": f"Bearer {token}"},
                 json=body,
-                params={"page_size": 20},
             )
             data = resp.json()
             if data.get("code") != 0:
                 return {"status": "error", "message": f"Wiki search failed: {data.get('msg', 'unknown error')}"}
 
-            items = data.get("data", {}).get("items", [])
+            items = data.get("data", {}).get("docs_entities", [])
+            total = data.get("data", {}).get("total", 0)
             results = []
             for item in items:
+                doc_token = item.get("docs_token", "")
+                doc_type = item.get("docs_type", "doc")
+                # Construct URL based on doc type
+                if doc_type == "bitable":
+                    url = f"https://feishu.cn/base/{doc_token}"
+                elif doc_type == "sheet":
+                    url = f"https://feishu.cn/sheets/{doc_token}"
+                else:
+                    url = f"https://feishu.cn/docx/{doc_token}"
                 results.append({
                     "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "node_id": item.get("node_id", ""),
-                    "obj_type": item.get("obj_type", ""),
-                    "space_id": item.get("space_id", ""),
+                    "url": url,
+                    "doc_token": doc_token,
+                    "doc_type": doc_type,
                 })
 
-            return {"status": "ok", "count": len(results), "results": results}
+            return {"status": "ok", "count": len(results), "total": total, "results": results}
         except Exception as e:
             return {"status": "error", "message": f"Wiki search error: {e}"}
 
