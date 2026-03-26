@@ -15,7 +15,7 @@ from typing import Callable, Awaitable
 
 import httpx
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, P2ImMessageReactionCreatedV1
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger, P2CardActionTriggerResponse, CallBackToast,
 )
@@ -258,6 +258,53 @@ class FeishuListener:
         resp.toast = toast
         return resp
 
+    def _handle_reaction(self, data: P2ImMessageReactionCreatedV1) -> None:
+        """Handle reaction events — someone reacted to a message."""
+        event = data.event
+        if not event:
+            return
+
+        # Skip bot's own reactions
+        operator_type = event.operator_type or ""
+        if operator_type == "app":
+            return
+
+        user_id = ""
+        if event.user_id:
+            user_id = getattr(event.user_id, "open_id", "") or ""
+        if not self._is_allowed(user_id):
+            return
+
+        emoji_type = ""
+        if event.reaction_type:
+            emoji_type = getattr(event.reaction_type, "emoji_type", "") or ""
+
+        message_id = event.message_id or ""
+        content = f"[Reaction: {emoji_type} on message {message_id}]"
+        request_id = str(uuid.uuid4())
+
+        from datetime import datetime, timezone
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        meta = {
+            "user_id": user_id,
+            "chat_id": "",  # reaction events don't include chat_id directly
+            "chat_type": "unknown",
+            "sender_name": user_id,
+            "message_type": "reaction",
+            "message_time": message_time,
+            "request_id": request_id,
+            "message_id": message_id,
+            "emoji_type": emoji_type,
+            "root_id": "",
+            "parent_id": "",
+        }
+
+        if hasattr(self, "_loop") and self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_message(content, request_id, meta), self._loop
+            )
+
     def start(self, loop) -> None:
         """Start the WebSocket listener in a background thread.
 
@@ -274,6 +321,7 @@ class FeishuListener:
         handler = (
             lark.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self._handle_message)
+            .register_p2_im_message_reaction_created_v1(self._handle_reaction)
             .register_p2_card_action_trigger(self._handle_card_action)
             .build()
         )
