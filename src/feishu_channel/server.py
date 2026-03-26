@@ -840,31 +840,23 @@ class FeishuChannel:
     # ── Image search (Pexels + Tenor) ──────────────────────────
 
     async def _handle_search_image(self, query: str, img_type: str = "photo", count: int = 1) -> dict:
-        """Search for photos (Pexels) or GIFs (Tenor) and optionally download."""
+        """Search for photos (Pexels) or GIFs (Tenor), auto-download to /tmp/."""
         count = min(max(count, 1), 5)
         try:
+            urls = []
             if img_type == "gif":
-                # Tenor API (Google, free)
                 resp = await self.http.get(
                     "https://tenor.googleapis.com/v2/search",
                     params={"q": query, "key": "AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ",
                             "limit": count, "media_filter": "gif"},
                 )
                 data = resp.json()
-                results = []
                 for r in data.get("results", [])[:count]:
                     media = r.get("media_formats", {})
-                    gif_url = media.get("gif", {}).get("url", "")
-                    tiny_url = media.get("tinygif", {}).get("url", "")
-                    results.append({
-                        "title": r.get("content_description", ""),
-                        "url": gif_url or tiny_url,
-                        "preview": tiny_url or gif_url,
-                    })
-                return {"status": "ok", "type": "gif", "count": len(results), "results": results}
-
+                    url = media.get("gif", {}).get("url", "") or media.get("tinygif", {}).get("url", "")
+                    if url:
+                        urls.append({"url": url, "title": r.get("content_description", ""), "ext": "gif"})
             else:
-                # Pexels API
                 pexels_key = os.environ.get("PEXELS_API_KEY", "")
                 if not pexels_key:
                     return {"status": "error", "message": "PEXELS_API_KEY not set"}
@@ -874,15 +866,26 @@ class FeishuChannel:
                     params={"query": query, "per_page": count, "size": "medium"},
                 )
                 data = resp.json()
-                results = []
                 for p in data.get("photos", [])[:count]:
-                    results.append({
-                        "title": p.get("alt", ""),
-                        "url": p.get("src", {}).get("large", ""),
-                        "preview": p.get("src", {}).get("medium", ""),
-                        "photographer": p.get("photographer", ""),
-                    })
-                return {"status": "ok", "type": "photo", "count": len(results), "results": results}
+                    url = p.get("src", {}).get("large", "") or p.get("src", {}).get("medium", "")
+                    if url:
+                        urls.append({"url": url, "title": p.get("alt", ""), "ext": "jpg", "photographer": p.get("photographer", "")})
+
+            # Auto-download to /tmp/
+            results = []
+            for i, item in enumerate(urls):
+                filename = f"/tmp/search_img_{i}.{item['ext']}"
+                try:
+                    dl = await self.http.get(item["url"])
+                    if dl.status_code == 200:
+                        with open(filename, "wb") as f:
+                            f.write(dl.content)
+                        item["local_path"] = filename
+                except Exception:
+                    item["local_path"] = ""
+                results.append(item)
+
+            return {"status": "ok", "type": img_type, "count": len(results), "results": results}
 
         except Exception as e:
             return {"status": "error", "message": f"Image search error: {e}"}
