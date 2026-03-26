@@ -351,6 +351,31 @@ class FeishuChannel:
         if user_id:
             meta["sender_name"] = await self._resolve_user_name(user_id, chat_id)
 
+        # Fetch replied-to message content if this is a reply
+        parent_id = meta.get("parent_id", "")
+        if parent_id:
+            try:
+                token = await self.cards._get_token()
+                resp = await self.http.get(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{parent_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
+                if data.get("code") == 0:
+                    item = data.get("data", {}).get("items", [{}])[0]
+                    parent_body = item.get("body", {}).get("content", "")
+                    parent_type = item.get("msg_type", "text")
+                    try:
+                        parent_json = json.loads(parent_body)
+                        if parent_type == "text":
+                            meta["reply_to_content"] = parent_json.get("text", "")
+                        else:
+                            meta["reply_to_content"] = parent_body
+                    except (json.JSONDecodeError, TypeError):
+                        meta["reply_to_content"] = parent_body
+            except Exception as e:
+                logger.debug("Failed to fetch parent message %s: %s", parent_id, e)
+
         # Handle media downloads
         message_type = meta["message_type"]
         if message_type in ("image", "audio", "file", "media"):
