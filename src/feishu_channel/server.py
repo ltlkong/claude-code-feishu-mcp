@@ -362,17 +362,46 @@ class FeishuChannel:
                 )
                 data = resp.json()
                 if data.get("code") == 0:
-                    item = data.get("data", {}).get("items", [{}])[0]
-                    parent_body = item.get("body", {}).get("content", "")
-                    parent_type = item.get("msg_type", "text")
-                    try:
-                        parent_json = json.loads(parent_body)
-                        if parent_type == "text":
-                            meta["reply_to_content"] = parent_json.get("text", "")
-                        else:
+                    items = data.get("data", {}).get("items", [])
+                    if items:
+                        item = items[0]
+                        parent_body = item.get("body", {}).get("content", "")
+                        parent_type = item.get("msg_type", "text")
+                        try:
+                            parent_json = json.loads(parent_body)
+                            if parent_type == "text":
+                                meta["reply_to_content"] = parent_json.get("text", "")
+                            elif parent_type == "interactive":
+                                # Card message — extract text from elements
+                                texts = []
+                                elements = parent_json.get("elements", [])
+                                for row in elements:
+                                    if isinstance(row, list):
+                                        for el in row:
+                                            if isinstance(el, dict) and el.get("tag") == "text" and el.get("text"):
+                                                texts.append(el["text"])
+                                    elif isinstance(row, dict) and row.get("tag") == "text" and row.get("text"):
+                                        texts.append(row["text"])
+                                title = parent_json.get("title", "")
+                                if title:
+                                    texts.insert(0, title)
+                                meta["reply_to_content"] = " ".join(texts) if texts else parent_body
+                            elif parent_type == "post":
+                                # Rich text — extract text tags
+                                texts = []
+                                title = parent_json.get("title", "")
+                                if title:
+                                    texts.append(title)
+                                for row in parent_json.get("content", []):
+                                    if isinstance(row, list):
+                                        for el in row:
+                                            if isinstance(el, dict) and el.get("text"):
+                                                texts.append(el["text"])
+                                meta["reply_to_content"] = " ".join(texts) if texts else parent_body
+                            else:
+                                meta["reply_to_content"] = parent_body
+                        except (json.JSONDecodeError, TypeError):
                             meta["reply_to_content"] = parent_body
-                    except (json.JSONDecodeError, TypeError):
-                        meta["reply_to_content"] = parent_body
             except Exception as e:
                 logger.debug("Failed to fetch parent message %s: %s", parent_id, e)
 
