@@ -467,9 +467,9 @@ class CardManager:
             replaced = message_id is not None
 
         del self._cards[request_id]
-        self._origins.pop(request_id, None)  # Prevent ghost card on double-finalize
         self._pending.pop(request_id, None)
         if replaced:
+            self._origins.pop(request_id, None)  # Only clear on success — keep for retry on failure
             return {"status": "ok"}
         return {"status": "error", "message": "Failed to send final response"}
 
