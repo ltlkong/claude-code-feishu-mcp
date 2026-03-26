@@ -216,6 +216,8 @@ class FeishuListener:
             "message_time": message_time,
             "request_id": request_id,
             "message_id": msg.message.message_id,
+            "root_id": msg.message.root_id or "",  # thread root message id (for replies)
+            "parent_id": msg.message.parent_id or "",  # direct parent message id (for replies)
         }
 
         # Track active chats and last message time for recovery
