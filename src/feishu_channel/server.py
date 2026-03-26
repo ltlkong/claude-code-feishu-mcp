@@ -247,6 +247,22 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="manage_task",
+        description="Manage Feishu Tasks (飞书任务). Actions: create (new task), list (my tasks), update (modify task), complete (mark done).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["create", "list", "update", "complete"], "description": "Operation to perform"},
+                "summary": {"type": "string", "description": "For create/update: task title/summary", "default": ""},
+                "description": {"type": "string", "description": "For create/update: task description", "default": ""},
+                "due": {"type": "string", "description": "For create/update: due date as timestamp (seconds) or empty", "default": ""},
+                "task_id": {"type": "string", "description": "For update/complete: task ID", "default": ""},
+                "page_size": {"type": "integer", "description": "For list: number of tasks", "default": 20},
+            },
+            "required": ["action"],
+        },
+    ),
+    types.Tool(
         name="search_wiki",
         description="Search Feishu knowledge base (知识库/Wiki). Returns matching wiki nodes with titles, URLs, and document types. Use for finding company docs, knowledge articles, and wiki pages.",
         inputSchema={
@@ -346,6 +362,10 @@ class FeishuChannel:
             elif name == "search_wiki":
                 result = await channel._handle_search_wiki(
                     arguments["query"], arguments.get("space_id", ""))
+            elif name == "manage_task":
+                result = await channel._handle_manage_task(
+                    arguments["action"], arguments.get("summary", ""), arguments.get("description", ""),
+                    arguments.get("due", ""), arguments.get("task_id", ""), arguments.get("page_size", 20))
             elif name == "bitable_records":
                 result = await channel._handle_bitable_records(
                     arguments["action"], arguments["app_token"], arguments["table_id"],
@@ -801,6 +821,79 @@ class FeishuChannel:
             return {"status": "ok", "count": len(results), "total": total, "results": results}
         except Exception as e:
             return {"status": "error", "message": f"Wiki search error: {e}"}
+
+    # ── Task management ────────────────────────────────────────
+
+    async def _handle_manage_task(self, action: str, summary: str = "", description: str = "",
+                                   due: str = "", task_id: str = "", page_size: int = 20) -> dict:
+        """Manage Feishu Tasks."""
+        try:
+            token = await self.cards._get_token()
+            headers = {"Authorization": f"Bearer {token}"}
+            base_url = "https://open.feishu.cn/open-apis/task/v2/tasks"
+
+            if action == "create":
+                if not summary:
+                    return {"status": "error", "message": "summary required"}
+                body: dict = {"summary": summary}
+                if description:
+                    body["description"] = description
+                if due:
+                    body["due"] = {"timestamp": due, "is_all_day": False}
+                resp = await self.http.post(base_url, headers=headers, json=body)
+                data = resp.json()
+                if data.get("code") == 0:
+                    task = data.get("data", {}).get("task", {})
+                    return {"status": "ok", "task_id": task.get("id", ""), "summary": task.get("summary", "")}
+                return {"status": "error", "message": data.get("msg", "")}
+
+            elif action == "list":
+                resp = await self.http.get(base_url, headers=headers, params={"page_size": min(page_size, 50)})
+                data = resp.json()
+                if data.get("code") == 0:
+                    items = data.get("data", {}).get("items", [])
+                    tasks = []
+                    for t in items:
+                        tasks.append({
+                            "task_id": t.get("id", ""),
+                            "summary": t.get("summary", ""),
+                            "completed": t.get("completed_at", "") != "",
+                            "due": t.get("due", {}).get("timestamp", "") if t.get("due") else "",
+                        })
+                    return {"status": "ok", "count": len(tasks), "tasks": tasks}
+                return {"status": "error", "message": data.get("msg", "")}
+
+            elif action == "update":
+                if not task_id:
+                    return {"status": "error", "message": "task_id required"}
+                body = {}
+                if summary:
+                    body["summary"] = summary
+                if description:
+                    body["description"] = description
+                if due:
+                    body["due"] = {"timestamp": due, "is_all_day": False}
+                resp = await self.http.patch(f"{base_url}/{task_id}", headers=headers, json=body)
+                data = resp.json()
+                if data.get("code") == 0:
+                    return {"status": "ok", "task_id": task_id}
+                return {"status": "error", "message": data.get("msg", "")}
+
+            elif action == "complete":
+                if not task_id:
+                    return {"status": "error", "message": "task_id required"}
+                import time as _time
+                resp = await self.http.post(f"{base_url}/{task_id}/complete", headers=headers, json={})
+                data = resp.json()
+                if data.get("code") == 0:
+                    return {"status": "ok", "task_id": task_id, "completed": True}
+                return {"status": "error", "message": data.get("msg", "")}
+
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}"}
+
+        except Exception as e:
+            return {"status": "error", "message": f"Task error: {e}"}
 
     # ── Bitable CRUD ───────────────────────────────────────────
 
