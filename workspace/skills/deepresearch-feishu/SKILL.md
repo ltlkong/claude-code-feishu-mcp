@@ -11,14 +11,14 @@ Multi-source autonomous research. You are the dispatcher — you orchestrate, Cl
 
 ```
 You (Dispatcher / Claude)
-  ├─ Assess → Decompose → Plan → Confirm (via Feishu)
-  ├─ Search: parallel Claude sub-agents (WebSearch + WebFetch)
-  ├─ File analysis: Claude sub-agents (Read tool + Python)
-  ├─ Process results → state file on disk
-  ├─ Check coverage → fill gaps
-  ├─ Verify: additional WebSearch cross-checks
-  ├─ Write report from state file
-  └─ Deliver via Feishu (card / markdown / file)
+  ├─ Phase 1: Clarify → Decompose → Plan → Confirm (via Feishu)
+  ├─ Phase 2: Search (parallel Claude sub-agents, WebSearch + WebFetch)
+  ├─ Phase 3: Extract → batch-add to state file          ← GATE: state file populated
+  ├─ Phase 4: Coverage check → fill gaps                  ← GATE: all angles covered
+  ├─ Phase 5: Verify sources + cross-check                ← GATE: sources.py collected
+  ├─ Phase 6: Map relationships → narrative skeleton
+  ├─ Phase 7: Write report FROM state file with citations  ← GATE: read state file first
+  └─ Phase 8: Deliver via Feishu + suggest follow-ups
 ```
 
 ### Division of Labor
@@ -61,36 +61,34 @@ source_scorer.py --url "..." --type "..." --date "..."
 echo "text" | web_extract.py numbers|money|percentages|dates
 ```
 
-## Workflow
+---
 
-### Step 0: Feishu Setup
+## Workflow: Mandatory Protocol
 
-Every step below must call `update_status(request_id, status, text)` to keep the user informed. Status examples:
-- `"Clarifying..."` / `"Searching..."` / `"Analyzing files..."` / `"Verifying..."` / `"Writing report..."`
+Every phase produces a **required artifact**. You MUST produce the artifact before moving to the next phase. Skipping a phase = broken report. No exceptions.
 
-### Step 1: Clarify Intent
+**Why this matters:** Past failures happened because phases 3-5 were skipped — report was written from raw search output without state management, source tiering, or verification. The result had no citations and unverified claims.
 
-**Before doing ANY research, ask clarifying questions to narrow the scope.**
+**Feishu rule:** Call `update_status(request_id, status, text)` at the START of every phase. The user is remote — status is their only visibility.
 
-**1a. Restate and probe:**
-- Restate the user's request in your own words
-- Ask 2-4 targeted clarifying questions:
-  - What specific aspect matters most?
-  - Intended use? (personal decision, business report, pitch deck...)
-  - Geographic/industry/time constraints?
-  - Depth level? (quick overview vs. exhaustive analysis)
-  - Specific data points or comparisons needed?
-- If user provided files, ask what role they play
+---
 
-Use `update_status(request_id, "Clarifying...", "<your questions>")` then `reply(request_id, "<your questions>")`.
+### Phase 1: Clarify Intent
 
-**1b. Wait for user response.** Do NOT proceed until confirmed.
+```
+update_status(request_id, "Clarifying...", "Understanding your research request")
+```
 
-**1c. After confirmation, decompose and plan:**
+**Before doing ANY research, clarify the scope.** Two paths:
 
-1. Assess sources: user files? web? both?
-2. Break into 3-5 research angles
-3. Init session + coverage checklist:
+**Path A — User gave vague request:** Ask 2-4 targeted clarifying questions via `reply()`. Wait for response before proceeding. Use a Feishu V2 card with structured options if the questions have discrete choices (e.g. depth level, region focus, output format).
+
+**Path B — User gave detailed requirements (specific angles, data points, constraints):** Skip clarification, go straight to planning. Acknowledge what you understood in `update_status`.
+
+**After scope is clear, decompose and plan:**
+
+1. Break into 3-5 research angles
+2. Init session + coverage checklist:
 
 ```bash
 SESSION_ID=$(python3 $SKILL/research_state.py init --topic "..." --question "...")
@@ -100,13 +98,21 @@ echo '## Coverage Checklist
 ...' | python3 $SKILL/research_state.py append --id $SESSION_ID
 ```
 
-4. Present the research plan via Feishu and ask: **"This is my plan. Should I start, or do you want to adjust?"** (skip for scheduled tasks)
+3. If using Path A, present the plan and ask: **"Should I start, or adjust?"**
 
-### Step 2: Search (Claude Sub-Agents in Parallel)
+**Phase 1 artifact:** `$SESSION_ID` initialized with coverage checklist.
 
-**Dispatch Claude sub-agents using the Agent tool.** Each sub-agent uses `WebSearch` for discovery and `WebFetch` for deep page reading.
+---
 
-For each research angle, launch TWO sub-agents in parallel (one per language):
+### Phase 2: Search (Claude Sub-Agents in Parallel)
+
+```
+update_status(request_id, "Searching...", "Launching N parallel search agents")
+```
+
+Dispatch Claude sub-agents using the Agent tool. Each sub-agent uses `WebSearch` for discovery and `WebFetch` for deep page reading.
+
+For each angle, launch TWO sub-agents (one per language):
 
 ```
 Agent(
@@ -116,10 +122,10 @@ Agent(
 
   1. Use WebSearch to search for: "[search query]"
   2. For the most promising 3-5 results, use WebFetch to read the full page
-  3. Extract key facts, data points, quotes with exact numbers
-  4. Write findings to the state file:
+  3. Extract key facts with exact numbers and source URLs
+  4. Write findings to state file:
      python3 {SKILL}/research_state.py add --id {SESSION_ID} \
-       --fact "..." --source "https://..." --confidence high/medium/low --topic "angle name"
+       --fact "..." --source "https://..." --confidence high/medium/low
   5. Record your query:
      python3 {SKILL}/research_state.py queried --id {SESSION_ID} --query "..."
 
@@ -130,38 +136,47 @@ Agent(
 ```
 
 **Query design:**
-- Each query should be specific and descriptive, not generic keywords
-- Include time ranges, specific data points you're looking for
+- Specific and descriptive, not generic keywords
+- Include time ranges, specific data points
 - One sub-agent per language: user's language + English
-- Example (user's language): `"China real estate policy 2025-2026 guaranteed delivery urban village renovation mortgage rates developer debt restructuring sales data"` (in the user's language)
-- Example (English): `"China real estate policy changes 2025-2026 guaranteed delivery urban village renovation mortgage rates"`
 
-**After all sub-agents complete**, update status:
+**Phase 2 artifact:** All sub-agents completed, findings written to state file.
+
+---
+
+### Phase 3: Verify State File Population
+
+> **MANDATORY GATE — You MUST run this before Phase 4.**
 
 ```
-update_status(request_id, "Processing results...", "N sub-agents completed, processing findings")
+update_status(request_id, "Processing results...", "Checking collected findings")
 ```
 
-Then check what was collected:
 ```bash
 python3 $SKILL/research_state.py status --id $SESSION_ID
+# MUST show: Findings: 20+ before proceeding
 ```
 
-### Step 3: File Analysis (Claude Sub-Agents)
+If sub-agents wrote findings directly (via `research_state.py add`), the state file should be populated. If not, read sub-agent outputs and batch-add:
 
-**Only if user provided files.** Dispatch sub-agents for:
-- Reading PDFs (use `pages` param for large files)
-- Parsing Excel/Word documents
-- Analyzing images
-- Cross-referencing between documents
+```bash
+echo '[
+  {"fact": "specific claim", "source": "https://url", "confidence": "high"},
+  ...
+]' | python3 $SKILL/research_state.py batch-add --id $SESSION_ID
+```
 
-Sub-agent prompt must include:
-- Specific files to analyze and what to extract
-- Write findings via `research_state.py add` with source=filename
-- Flag discrepancies between documents
-- Return max 500 word summary with key numbers
+**Phase 3 artifact:** State file has 20+ findings. `status` command confirms count.
 
-### Step 4: Check Coverage
+---
+
+### Phase 4: Check Coverage
+
+> **MANDATORY GATE — Run these exact commands.**
+
+```
+update_status(request_id, "Checking coverage...", "Verifying all angles are covered")
+```
 
 ```bash
 python3 $SKILL/research_state.py update-coverage --id $SESSION_ID
@@ -169,114 +184,146 @@ python3 $SKILL/research_state.py status --id $SESSION_ID
 python3 $SKILL/compare_data.py coverage --id $SESSION_ID
 ```
 
-Update Feishu status with coverage progress.
+- All angles covered → proceed to Phase 5
+- Gaps found → dispatch targeted sub-agents, batch-add, re-check
+- Stop after 3 rounds max
 
-For uncovered angles, dispatch additional sub-agents with more targeted queries.
+**Phase 4 artifact:** Coverage output reviewed, gaps addressed.
 
-Stop when: all covered OR 3 rounds OR diminishing returns.
+---
 
-### Step 5: Verify Sources & Cross-Check Data
+### Phase 5: Verify Sources & Cross-Check
 
-**Never skip this step.**
-
-```
-update_status(request_id, "Verifying...", "Cross-checking key claims across sources")
-```
-
-**5a. Source Credibility Check:**
-For each key data point, assess the source:
-- **Tier 1** (high trust): Government data, major research firms, public filings, top-tier financial media
-- **Tier 2** (medium trust): Industry media, second-hand citations, well-known platforms
-- **Tier 3** (low trust): Unsourced aggregators, marketing content, no traceable origin
-
-Flag any key claim that only comes from Tier 3. For critical single-source numbers, dispatch a verification sub-agent:
+> **MANDATORY GATE — You MUST run these commands before writing. Every time.**
+> Past failure: skipping this step produced a report with unverified claims and no source tiers.
 
 ```
-Agent(
-  subagent_type="general-purpose",
-  prompt="Use WebSearch to verify: [specific claim with numbers]. Find 2+ independent sources that confirm or contradict this.",
-  run_in_background=true
-)
+update_status(request_id, "Verifying...", "Cross-checking sources and claims")
 ```
 
-**5b. Cross-Verification:**
+**5a. Collect and tier all sources:**
+```bash
+python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
+```
+
+**5b. Detect conflicts:**
 ```bash
 python3 $SKILL/compare_data.py conflicts --id $SESSION_ID
 python3 $SKILL/compare_data.py duplicates --id $SESSION_ID
 ```
 
-Mark claims: `VERIFIED` (2+ sources) / `CONTRADICTED` (sources disagree) / `SINGLE_SOURCE` / `UNVERIFIABLE`
-
-### Step 6: Map Data Relationships
-
-**Before writing, organize the data into a coherent narrative.**
-
-**6a. Causal Chains:** Policy → Market impact, Tech adoption → Industry shift, etc.
-
-**6b. Data Dependencies:** Does data A explain B? Any contradictions to reconcile?
-
-**6c. Narrative Skeleton:**
-1. Big picture story (one sentence)
-2. 3-4 key threads
-3. How they connect
-4. What is uncertain and why
-
-### Step 7: Write & Deliver Report
-
+**5c. Cross-check critical claims:**
+For any key stat that is SINGLE_SOURCE or Tier 3 only, dispatch a verification sub-agent:
 ```
-update_status(request_id, "Writing report...", "Synthesizing findings into report")
+Agent(prompt="Use WebSearch to verify: [claim]. Find 2+ independent sources.", run_in_background=true)
 ```
 
-Read state file as source of truth:
+**5d. Mark verification status:**
+- `VERIFIED` — 2+ independent sources agree
+- `CONTRADICTED` — sources disagree (note both figures)
+- `SINGLE_SOURCE` — only one source (flag in report)
+- `UNVERIFIABLE` — cannot confirm
+
+**Phase 5 artifact:** `sources.py collect` output with tiers. `compare_data.py conflicts` output reviewed.
+
+---
+
+### Phase 6: Map Data Relationships
+
+Before writing, organize data into narrative structure:
+
+1. **Causal chains**: What causes what?
+2. **Data dependencies**: Does A explain B?
+3. **Contradictions**: What needs reconciliation?
+4. **Narrative skeleton**: One-sentence big picture, 3-4 key threads, what's uncertain
+
+**Phase 6 artifact:** Narrative structure clear before writing.
+
+---
+
+### Phase 7: Write Report
+
+> **MANDATORY GATE — You MUST read the state file before writing.**
+
+```
+update_status(request_id, "Writing report...", "Synthesizing findings")
+```
+
+**Step 1 — Read state file:**
 ```bash
 cat $(python3 $SKILL/research_state.py path --id $SESSION_ID)
 ```
 
-**Report structure:**
-1. **Key Findings** — top 3-5 takeaways, each claim with markdown link to source
-2. **Charts** — where data supports it, include Feishu V2 charts (bar/line/pie) to visualize key metrics (e.g. market size growth, adoption rates, cost savings). See feishu-card skill for chart spec.
-3. **Detailed Analysis** — per angle, with causal chains. Not data dumps. Every data point must link to its source.
-4. **Data Uncertainty** — CONTRADICTED / SINGLE_SOURCE / UNVERIFIABLE items
-5. **Sources** — EVERY source as a clickable markdown link: `[Title](URL)` with Tier noted. User must be able to click and verify each one. No bare URLs or references without links.
-
-**Source citation format (STRICT):**
-- Inline: `According to [McKinsey 2025 Report](https://url), banking AI cost reduction can reach 20%` (adapt to user's language, but always include the markdown link)
-- Source list: `- [McKinsey: The State of AI](https://full-url) — Tier 1`
-- NEVER use `[N]` numbered references without the actual URL. Every citation must be a clickable link.
-
-Generate sources:
+**Step 2 — Get formatted sources:**
 ```bash
 python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
 ```
 
-**Delivery via Feishu:**
+**Step 3 — Write report using ONLY data from the state file.**
 
-**CRITICAL: `reply()` can only be called ONCE per request_id — it finalizes the card. Never plan a delivery that requires multiple `reply()` calls to the same request_id. Everything must go in ONE reply.**
+**Report structure:**
+1. **Key Findings** — top 3-5 takeaways with inline source links
+2. **Detailed Analysis** — per angle, with causal chains. Every data point linked to source.
+3. **Data Uncertainty** — CONTRADICTED / SINGLE_SOURCE / UNVERIFIABLE items
+4. **Sources** — every source as clickable `[Title](URL)` with Tier
 
-- **Default (markdown with charts):** Build a single Feishu V2 card JSON containing ALL content — key findings, charts, detailed analysis, and sources — then send via one `reply(request_id, card_json)`. Use collapsible panels (`collapsible_panel`) to keep long reports manageable within a single card.
-- **If the report exceeds 28KB card limit:** Use `reply(request_id, full_markdown_text)` as plain markdown (no card). Charts can be generated as images via matplotlib and sent separately via `reply_file`.
-- **PDF/DOCX/XLSX:** Generate with the appropriate skill, save to `/tmp/`, use `update_status` for progress, then `reply(request_id, summary_text)` + `reply_file(chat_id, file_path)` for the file. The reply should contain a brief summary; the file has the full report.
-- **Splitting is OK** (e.g. reply with summary + reply_file with full report). But plan the split upfront — don't split because you forgot reply() is one-shot.
+**Citation format (STRICT):**
+- Inline: `According to [McKinsey 2025](https://url), the market reached $3.2B`
+- Source list: `- [McKinsey: State of AI](https://full-url) — Tier 1`
+- NEVER use bare URLs or `[N]` without actual links. Every citation must be clickable.
 
-### Step 8: Follow-ups
+**Phase 7 artifact:** Complete report with inline citations and source list.
 
-Suggest 2-3 specific follow-up research directions based on gaps found. Include them in the final reply.
+---
+
+### Phase 8: Deliver via Feishu + Follow-ups
+
+**CRITICAL: `reply()` can only be called ONCE per request_id.**
+
+**Leverage all Feishu MCP tools for rich delivery:**
+
+**Charts & Visualization:**
+- Use Feishu V2 card JSON with chart elements (bar/line/pie) to visualize key metrics (market size, adoption rates, cost comparisons). See `workspace/skills/feishu-card/SKILL.md` for chart spec.
+- Use collapsible panels (`collapsible_panel`) for long sections within a single card.
+
+**Structured Data:**
+- If research produces structured comparison data (e.g. regional comparison tables, feature matrices), consider outputting as a Feishu Bitable via `create_bitable(title, fields, records, views, chat_id)` — the user gets an interactive multi-dimensional spreadsheet they can filter and sort.
+
+**Long-form Reports:**
+- For reports exceeding card limits, create a Feishu cloud document via `create_doc(title, content, chat_id)` — native Feishu document with headings, lists, and code blocks.
+- Or save as markdown/PDF to `/tmp/` and send via `reply_file(chat_id, file_path)`.
+
+**Rich Text Posts:**
+- For reports with inline images (charts generated as PNG), use `reply_post(chat_id, content)` to mix text and images in one message.
+
+**Delivery strategy (choose based on report length):**
+- **Short (<4KB):** `reply(request_id, markdown_text)` — plain text card
+- **Medium (<28KB):** `reply(request_id, v2_card_json)` — V2 card with charts and collapsible panels
+- **Long (>28KB):** `reply(request_id, summary_with_key_findings)` + `create_doc(...)` or `reply_file(...)` for full report
+- **Data-heavy:** `reply(request_id, summary)` + `create_bitable(...)` for interactive data
+
+Plan the split upfront — don't split because you forgot reply() is one-shot.
+
+Include 2-3 specific follow-up research directions in the final reply.
+
+---
 
 ## Rules
 
-1. **Claude sub-agents do the searching** — dispatch via Agent tool with `WebSearch` + `WebFetch`. Run searches in parallel using `run_in_background`
-2. **Specific queries** — descriptive search phrases, not keyword soup. Include what data you're looking for
-3. **Parallel execution** — launch all angle sub-agents simultaneously. Don't wait for one to finish before starting the next
-4. **Bilingual** — always search in both the user's language and English
-5. **Clarify before research** — ask 2-4 questions to narrow scope. Wait for confirmation (skip for scheduled tasks)
-6. **Coverage** — each angle needs 2+ sources before moving on
-7. **Verify MANDATORY** — NEVER skip source verification. Assess source tier for critical claims
-8. **Map relationships before writing** — identify causal chains, contradictions, narrative structure before prose
-9. **Clickable citations** — every claim must have an inline `[source title](URL)` markdown link. Source list at end must also be clickable links with Tier. User must be able to verify every data point by clicking.
-10. **State file = truth** — all findings on disk via research_state.py, not in memory
-11. **Live progress** — call `update_status()` at every step so the user sees what's happening
-12. **Feishu delivery** — always use `reply()` or `reply_file()` to deliver. Plain text output does NOT reach the user
-13. **Limits:** 3 search rounds max / user stop
+1. **Claude sub-agents do the searching** — dispatch via Agent tool with `WebSearch` + `WebFetch`. Run in parallel with `run_in_background`
+2. **Specific queries** — descriptive search phrases, not keyword soup
+3. **Parallel execution** — launch all angle sub-agents simultaneously
+4. **Bilingual** — always search in user's language + English
+5. **Clarify before research** — ask 2-4 questions. Wait for confirmation (skip for scheduled tasks)
+6. **State file is the ONLY source of truth** — ALL findings go into state file. Report is written FROM state file, not from memory.
+7. **Every phase gate is mandatory** — run the exact commands specified. Skipping = broken report.
+8. **Sources MUST be collected and tiered** — run `sources.py collect` before writing.
+9. **Conflicts MUST be checked** — run `compare_data.py conflicts` before writing.
+10. **Every claim has a clickable source link** — no exceptions. Source list at end with tiers.
+11. **Live progress via Feishu** — call `update_status()` at the start of every phase.
+12. **Feishu delivery** — use MCP tools (`reply`, `reply_file`, `reply_image`, `reply_post`, `create_doc`, `create_bitable`). Plain text output does NOT reach the user.
+13. **Rich delivery when it fits** — V2 charts, Bitable, cloud docs are available but not mandatory. Use them when data genuinely benefits from visualization, not as decoration.
+14. **Limits:** 3 search rounds max / user stop.
 
 ## Triggers
 
