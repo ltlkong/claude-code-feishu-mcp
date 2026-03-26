@@ -358,7 +358,7 @@ class FeishuChannel:
         elif message_type == "post":
             content = await self._process_post_content(content, message_id)
 
-        # Defer card creation — card appears only when Claude calls create_response/update_status/reply
+        # Defer card creation — card appears only when Claude calls update_status/reply
         self.cards.register_pending(request_id, chat_id, message_id)
 
         # Inject user profile into meta
@@ -682,9 +682,18 @@ class FeishuChannel:
                     json={"children": children, "index": 0},
                 )
 
-            # Step 3: Get the URL
-            tenant = self.settings.feishu_app_id  # approximate
-            url = f"https://hcnylnojpxbl.feishu.cn/docx/{doc_id}"
+            # Step 3: Get the URL from the API response (or construct fallback)
+            try:
+                doc_resp = await self.http.get(
+                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                doc_data = doc_resp.json()
+                url = doc_data.get("data", {}).get("document", {}).get("url", "")
+                if not url:
+                    url = f"https://feishu.cn/docx/{doc_id}"
+            except Exception:
+                url = f"https://feishu.cn/docx/{doc_id}"
 
             # Step 4: Optionally send plain link to chat (renders as doc preview card)
             if chat_id:
@@ -730,7 +739,10 @@ class FeishuChannel:
                 f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables",
                 headers={"Authorization": f"Bearer {token}"},
             )
-            table_id = resp.json()["data"]["items"][0]["table_id"]
+            items = resp.json().get("data", {}).get("items", [])
+            if not items:
+                return {"status": "error", "message": "Bitable created but no default table found"}
+            table_id = items[0]["table_id"]
 
             # Delete default fields (except the first one which we'll repurpose)
             resp = await self.http.get(

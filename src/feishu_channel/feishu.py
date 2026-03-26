@@ -53,31 +53,33 @@ if _original_handle:
 # ── Dedup cache ──────────────────────────────────────────────────────
 
 class _DedupCache:
-    """OrderedDict-based dedup with TTL."""
+    """OrderedDict-based dedup with TTL. Thread-safe."""
 
     def __init__(self, max_size: int = 1000, ttl_seconds: float = 60):
         self._cache: OrderedDict[str, float] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._lock = threading.Lock()
 
     def seen(self, key: str) -> bool:
         """Return True if key was already seen (not expired). Adds key if new."""
-        now = time.time()
-        # Evict expired
-        while self._cache:
-            oldest_key, oldest_time = next(iter(self._cache.items()))
-            if now - oldest_time > self._ttl:
+        with self._lock:
+            now = time.time()
+            # Evict expired
+            while self._cache:
+                oldest_key, oldest_time = next(iter(self._cache.items()))
+                if now - oldest_time > self._ttl:
+                    self._cache.popitem(last=False)
+                else:
+                    break
+            # Check
+            if key in self._cache:
+                return True
+            # Add
+            self._cache[key] = now
+            if len(self._cache) > self._max_size:
                 self._cache.popitem(last=False)
-            else:
-                break
-        # Check
-        if key in self._cache:
-            return True
-        # Add
-        self._cache[key] = now
-        if len(self._cache) > self._max_size:
-            self._cache.popitem(last=False)
-        return False
+            return False
 
 
 # ── Card action element parsing ──────────────────────────────────────
@@ -218,9 +220,12 @@ class FeishuListener:
 
         # Track active chats and last message time for recovery
         if hasattr(self, "_active_chats"):
-            self._active_chats.add(msg.message.chat_id)
+            self._active_chats[msg.message.chat_id] = time.time()
         if hasattr(self, "_last_ws_msg_time") and msg.message.create_time:
-            self._last_ws_msg_time[msg.message.chat_id] = str(msg.message.create_time)
+            try:
+                self._last_ws_msg_time[msg.message.chat_id] = int(msg.message.create_time)
+            except (ValueError, TypeError):
+                pass
 
         # Fire async callback — we're in lark-oapi's thread, schedule on MCP's event loop
         if hasattr(self, "_loop") and self._loop:
@@ -258,8 +263,8 @@ class FeishuListener:
             loop: The asyncio event loop running the MCP server (for scheduling callbacks).
         """
         self._loop = loop
-        self._active_chats: set[str] = set()  # chat_ids we've seen messages from
-        self._last_ws_msg_time: dict[str, str] = {}  # chat_id -> last message create_time (ms timestamp)
+        self._active_chats: dict[str, float] = {}  # chat_id -> last_activity_time (for eviction)
+        self._last_ws_msg_time: dict[str, int] = {}  # chat_id -> last message create_time (ms timestamp as int)
         self._http = httpx.AsyncClient(timeout=30)
         self._token: str | None = None
         self._token_time: float = 0
@@ -322,6 +327,13 @@ class FeishuListener:
         if not self._active_chats:
             return
 
+        # Evict chats inactive for more than 2 hours
+        now = time.time()
+        stale = [cid for cid, t in self._active_chats.items() if now - t > 7200]
+        for cid in stale:
+            del self._active_chats[cid]
+            self._last_ws_msg_time.pop(cid, None)
+
         recovered = 0
         for chat_id in list(self._active_chats):
             last_ws_time = self._last_ws_msg_time.get(chat_id)
@@ -334,12 +346,15 @@ class FeishuListener:
                 if not msg_id:
                     continue
 
-                # Only process messages NEWER than last WebSocket message
-                msg_create_time = msg.get("create_time", "0")
-                if msg_create_time <= last_ws_time:
-                    continue  # This message is older than or equal to our last WS message — skip
+                # Only process messages NEWER than last WebSocket message (int comparison)
+                try:
+                    msg_ts = int(msg.get("create_time", 0))
+                except (ValueError, TypeError):
+                    continue
+                if msg_ts <= last_ws_time:
+                    continue
 
-                # Check dedup (still useful as secondary filter)
+                # Check dedup (secondary filter, thread-safe)
                 if self._dedup.seen(msg_id):
                     continue
 
@@ -377,12 +392,10 @@ class FeishuListener:
                     "message_id": msg_id,
                 }
 
-                logger.info("Recovered missed message: %s in %s (create_time=%s > last_ws=%s)",
-                           msg_id, chat_id, msg_create_time, last_ws_time)
-                if hasattr(self, "_loop") and self._loop:
-                    asyncio.run_coroutine_threadsafe(
-                        self._on_message(content, request_id, meta), self._loop
-                    )
+                logger.info("Recovered missed message: %s in %s (ts=%d > last_ws=%d)",
+                           msg_id, chat_id, msg_ts, last_ws_time)
+                # Already in asyncio loop — use ensure_future, not run_coroutine_threadsafe
+                asyncio.ensure_future(self._on_message(content, request_id, meta))
                 recovered += 1
 
         if recovered:

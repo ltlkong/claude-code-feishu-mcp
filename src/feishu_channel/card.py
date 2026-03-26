@@ -346,8 +346,9 @@ class CardManager:
         self._origins[request_id] = (chat_id, reply_to_message_id)
 
     def cancel_pending(self, request_id: str) -> None:
-        """Cancel a pending card (when skip_reply is called)."""
+        """Cancel a pending card — cleans both _pending and _origins."""
         self._pending.pop(request_id, None)
+        self._origins.pop(request_id, None)
 
     async def _ensure_card(self, request_id: str) -> bool:
         """Ensure a card exists for the request_id.
@@ -466,14 +467,32 @@ class CardManager:
             replaced = message_id is not None
 
         del self._cards[request_id]
+        self._origins.pop(request_id, None)  # Prevent ghost card on double-finalize
+        self._pending.pop(request_id, None)
         if replaced:
             return {"status": "ok"}
         return {"status": "error", "message": "Failed to send final response"}
 
     async def cleanup_stale_cards(self) -> int:
-        """Finalize and remove cards that haven't been updated in stale_timeout."""
+        """Finalize and remove cards that haven't been updated in stale_timeout.
+        Also sweeps stale _pending and _origins entries to prevent memory leaks."""
         now = time.time()
         stale = [rid for rid, s in self._cards.items() if now - s.created_at > self._stale_timeout]
         for rid in stale:
             await self.finalize_card(rid, "*[Response timed out]*")
+
+        # Sweep _pending and _origins older than 2x stale_timeout (entries from silent messages)
+        max_age = self._stale_timeout * 2
+        # _pending and _origins don't track time, so cap by size as fallback
+        if len(self._pending) > 1000:
+            # Remove oldest half (insertion order)
+            keys = list(self._pending.keys())[:500]
+            for k in keys:
+                self._pending.pop(k, None)
+                self._origins.pop(k, None)
+        if len(self._origins) > 1000:
+            keys = list(self._origins.keys())[:500]
+            for k in keys:
+                self._origins.pop(k, None)
+
         return len(stale)
