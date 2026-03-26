@@ -13,6 +13,7 @@ import uuid
 from collections import OrderedDict
 from typing import Callable, Awaitable
 
+import httpx
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
@@ -215,6 +216,10 @@ class FeishuListener:
             "message_id": msg.message.message_id,
         }
 
+        # Track active chats for message recovery
+        if hasattr(self, "_active_chats"):
+            self._active_chats.add(msg.message.chat_id)
+
         # Fire async callback — we're in lark-oapi's thread, schedule on MCP's event loop
         if hasattr(self, "_loop") and self._loop:
             asyncio.run_coroutine_threadsafe(
@@ -251,6 +256,10 @@ class FeishuListener:
             loop: The asyncio event loop running the MCP server (for scheduling callbacks).
         """
         self._loop = loop
+        self._active_chats: set[str] = set()  # chat_ids we've seen messages from
+        self._http = httpx.AsyncClient(timeout=30)
+        self._token: str | None = None
+        self._token_time: float = 0
 
         handler = (
             lark.EventDispatcherHandler.builder("", "")
@@ -268,3 +277,105 @@ class FeishuListener:
         thread = threading.Thread(target=self._ws_client.start, daemon=True)
         thread.start()
         logger.info("Feishu WebSocket listener started")
+
+        # Start message recovery loop
+        asyncio.ensure_future(self._message_recovery_loop())
+
+    async def _get_token(self) -> str:
+        """Get cached tenant access token."""
+        if self._token and (time.time() - self._token_time) < 5400:
+            return self._token
+        from .media import get_tenant_token
+        self._token = await get_tenant_token(
+            self._http, self._settings.feishu_app_id, self._settings.feishu_app_secret
+        )
+        self._token_time = time.time()
+        return self._token
+
+    async def _pull_recent_messages(self, chat_id: str, count: int = 5) -> list[dict]:
+        """Pull recent messages from a chat via REST API."""
+        try:
+            token = await self._get_token()
+            resp = await self._http.get(
+                f"https://open.feishu.cn/open-apis/im/v1/messages",
+                params={
+                    "container_id_type": "chat",
+                    "container_id": chat_id,
+                    "sort_type": "ByCreateTimeDesc",
+                    "page_size": count,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                return data.get("data", {}).get("items", [])
+        except Exception as e:
+            logger.debug("Pull messages failed for %s: %s", chat_id, e)
+        return []
+
+    async def _recover_missed_messages(self):
+        """Check active chats for any messages missed during WebSocket gaps."""
+        if not self._active_chats:
+            return
+
+        recovered = 0
+        for chat_id in list(self._active_chats):
+            messages = await self._pull_recent_messages(chat_id, count=5)
+            for msg in messages:
+                msg_id = msg.get("message_id", "")
+                if not msg_id or self._dedup.seen(msg_id):
+                    continue
+
+                # New message not seen via WebSocket — process it
+                sender = msg.get("sender", {})
+                sender_id = sender.get("id", "")
+                if sender.get("sender_type") == "app":
+                    continue  # Skip bot's own messages
+                if not self._is_allowed(sender_id):
+                    continue
+
+                msg_type = msg.get("msg_type", "text")
+                body = msg.get("body", {})
+                content_str = body.get("content", "")
+
+                try:
+                    content_json = json.loads(content_str)
+                    if msg_type == "text":
+                        content = content_json.get("text", "")
+                    else:
+                        content = content_str
+                except (json.JSONDecodeError, TypeError):
+                    content = content_str
+
+                from datetime import datetime, timezone
+                request_id = str(uuid.uuid4())
+                meta = {
+                    "user_id": sender_id,
+                    "chat_id": chat_id,
+                    "chat_type": msg.get("chat_type", "p2p"),
+                    "sender_name": sender_id,
+                    "message_type": msg_type,
+                    "message_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "request_id": request_id,
+                    "message_id": msg_id,
+                }
+
+                logger.info("Recovered missed message: %s in %s", msg_id, chat_id)
+                if hasattr(self, "_loop") and self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_message(content, request_id, meta), self._loop
+                    )
+                recovered += 1
+
+        if recovered:
+            logger.info("Message recovery: recovered %d missed messages", recovered)
+
+    async def _message_recovery_loop(self):
+        """Periodically check for missed messages (every 60 seconds)."""
+        await asyncio.sleep(30)  # Initial delay
+        while True:
+            try:
+                await self._recover_missed_messages()
+            except Exception as e:
+                logger.error("Message recovery loop error: %s", e)
+            await asyncio.sleep(60)
