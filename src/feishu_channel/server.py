@@ -857,7 +857,7 @@ class FeishuChannel:
                     if url:
                         urls.append({"url": url, "title": r.get("content_description", ""), "ext": "gif"})
             else:
-                pexels_key = os.environ.get("PEXELS_API_KEY", "")
+                pexels_key = self.settings.pexels_api_key
                 if not pexels_key:
                     return {"status": "error", "message": "PEXELS_API_KEY not set"}
                 resp = await self.http.get(

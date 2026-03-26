@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     heartbeat_interval_minutes: int = 60
     heartbeat_inactivity_minutes: int = 30
 
+    # Pexels image search API (optional — enables search_image photo type)
+    pexels_api_key: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
