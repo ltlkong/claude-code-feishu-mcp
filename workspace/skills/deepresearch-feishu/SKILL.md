@@ -112,33 +112,35 @@ update_status(request_id, "Searching...", "Launching N parallel search agents")
 
 Dispatch Claude sub-agents using the Agent tool. Each sub-agent uses `WebSearch` for discovery and `WebFetch` for deep page reading.
 
-For each angle, launch TWO sub-agents (one per language):
+Break each angle into **2-3 specific sub-questions**. Launch up to **20 sub-agents** total (allocate based on complexity).
 
 ```
 Agent(
   subagent_type="general-purpose",
   prompt="""
-  Research angle: [description]
+  Research: [specific sub-question, not broad angle]
 
-  1. Use WebSearch to search for: "[search query]"
+  1. Use WebSearch to search for: "[targeted query]"
   2. For the most promising 3-5 results, use WebFetch to read the full page
-  3. Extract key facts with exact numbers and source URLs
-  4. Write findings to state file:
+  3. Extract ALL relevant facts — don't summarize or truncate, capture everything with numbers and URLs
+  4. ONLY report facts you actually found in search results. If you can't find data, say so. NEVER fabricate numbers.
+  5. Write each finding to state file:
      python3 {SKILL}/research_state.py add --id {SESSION_ID} \
        --fact "..." --source "https://..." --confidence high/medium/low
-  5. Record your query:
+  6. Record your query:
      python3 {SKILL}/research_state.py queried --id {SESSION_ID} --query "..."
 
-  Return a summary of what you found (max 300 words).
+  Return everything you found. If data is unavailable, explicitly state what couldn't be found.
   """,
   run_in_background=true
 )
 ```
 
 **Query design:**
+- Split broad angles into specific sub-questions — "莱阳房地产" → "莱阳房价走势" + "莱阳烂尾楼" + "莱阳土地出让"
 - Specific and descriptive, not generic keywords
 - Include time ranges, specific data points
-- One sub-agent per language: user's language + English
+- One sub-agent per sub-question per language
 
 **Phase 2 artifact:** All sub-agents completed, findings written to state file.
 
@@ -311,8 +313,8 @@ Include 2-3 specific follow-up research directions in the final reply.
 ## Rules
 
 1. **Claude sub-agents do the searching** — dispatch via Agent tool with `WebSearch` + `WebFetch`. Run in parallel with `run_in_background`
-2. **Specific queries** — descriptive search phrases, not keyword soup
-3. **Parallel execution** — launch all angle sub-agents simultaneously
+2. **Split angles into sub-questions** — don't use one broad query per angle. Break each into 2-3 specific queries targeting different data points.
+3. **Parallel execution** — up to **20 sub-agents** simultaneously. Allocate based on topic complexity.
 4. **Bilingual** — always search in user's language + English
 5. **Clarify before research** — ask 2-4 questions. Wait for confirmation (skip for scheduled tasks)
 6. **State file is the ONLY source of truth** — ALL findings go into state file. Report is written FROM state file, not from memory.
@@ -320,9 +322,11 @@ Include 2-3 specific follow-up research directions in the final reply.
 8. **Sources MUST be collected and tiered** — run `sources.py collect` before writing.
 9. **Conflicts MUST be checked** — run `compare_data.py conflicts` before writing.
 10. **Every claim has a clickable source link** — no exceptions. Source list at end with tiers.
+11. **NEVER fabricate data** — if a number can't be found, say "data unavailable." Sub-agent prompts must include "NEVER fabricate numbers." Better to have gaps than fake data.
+12. **Source list is MANDATORY in final report** — run `sources.py collect` and APPEND the full output to the end of the report. This was forgotten multiple times. The report is NOT complete without it.
 11. **Live progress via Feishu** — call `update_status()` at the start of every phase.
 12. **Feishu delivery** — use MCP tools (`reply`, `reply_file`, `reply_image`, `reply_post`, `create_doc`, `create_bitable`). Plain text output does NOT reach the user.
-13. **Rich delivery when it fits** — V2 charts, Bitable, cloud docs are available but not mandatory. Use them when data genuinely benefits from visualization, not as decoration.
+13. **Rich delivery when it fits** — V2 charts, Bitable, cloud docs available but not mandatory.
 14. **Limits:** 3 search rounds max / user stop.
 
 ## Triggers
