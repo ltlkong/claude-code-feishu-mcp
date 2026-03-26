@@ -207,6 +207,30 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="read_messages",
+        description="Read recent messages from a Feishu chat. Returns message history with sender, content, and timestamps. Use for understanding context, summarizing discussions, or finding specific info.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Chat ID to read messages from"},
+                "count": {"type": "integer", "description": "Number of messages to retrieve (max 50)", "default": 10},
+            },
+            "required": ["chat_id"],
+        },
+    ),
+    types.Tool(
+        name="send_reaction",
+        description="Send an emoji reaction to a message in Feishu. Types: THUMBSUP, HEART, LAUGH, SURPRISED, CRY, OK, FIRE, CLAP, PARTY, MUSCLE, FINGERHEART",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message ID to react to"},
+                "emoji": {"type": "string", "description": "Emoji type e.g. THUMBSUP, HEART, LAUGH"},
+            },
+            "required": ["message_id", "emoji"],
+        },
+    ),
+    types.Tool(
         name="search_wiki",
         description="Search Feishu knowledge base (知识库/Wiki). Returns matching wiki nodes with titles, URLs, and document types. Use for finding company docs, knowledge articles, and wiki pages.",
         inputSchema={
@@ -306,6 +330,12 @@ class FeishuChannel:
             elif name == "search_wiki":
                 result = await channel._handle_search_wiki(
                     arguments["query"], arguments.get("space_id", ""))
+            elif name == "read_messages":
+                result = await channel._handle_read_messages(
+                    arguments["chat_id"], arguments.get("count", 10))
+            elif name == "send_reaction":
+                result = await channel._handle_send_reaction(
+                    arguments["message_id"], arguments["emoji"])
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -751,6 +781,96 @@ class FeishuChannel:
             return {"status": "ok", "count": len(results), "total": total, "results": results}
         except Exception as e:
             return {"status": "error", "message": f"Wiki search error: {e}"}
+
+    # ── Message history & reactions ─────────────────────────────
+
+    async def _handle_read_messages(self, chat_id: str, count: int = 10) -> dict:
+        """Read recent messages from a Feishu chat."""
+        try:
+            count = min(count, 50)
+            token = await self.cards._get_token()
+            resp = await self.http.get(
+                "https://open.feishu.cn/open-apis/im/v1/messages",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "container_id_type": "chat",
+                    "container_id": chat_id,
+                    "sort_type": "ByCreateTimeDesc",
+                    "page_size": count,
+                },
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Read messages failed: {data.get('msg', '')}"}
+
+            items = data.get("data", {}).get("items", [])
+            messages = []
+            for item in items:
+                sender = item.get("sender", {})
+                body = item.get("body", {}).get("content", "")
+                msg_type = item.get("msg_type", "text")
+
+                # Extract text from content
+                text = ""
+                try:
+                    content_json = json.loads(body)
+                    if msg_type == "text":
+                        text = content_json.get("text", "")
+                    elif msg_type == "interactive":
+                        # Card — extract text elements
+                        texts = []
+                        for row in content_json.get("elements", []):
+                            if isinstance(row, list):
+                                for el in row:
+                                    if isinstance(el, dict) and el.get("tag") == "text" and el.get("text"):
+                                        texts.append(el["text"])
+                        title = content_json.get("title", "")
+                        text = (title + " " + " ".join(texts)).strip() if texts or title else "[card]"
+                    elif msg_type == "post":
+                        texts = []
+                        for row in content_json.get("content", []):
+                            if isinstance(row, list):
+                                for el in row:
+                                    if isinstance(el, dict) and el.get("text"):
+                                        texts.append(el["text"])
+                        text = " ".join(texts) if texts else "[post]"
+                    else:
+                        text = f"[{msg_type}]"
+                except (json.JSONDecodeError, TypeError):
+                    text = body[:200] if body else f"[{msg_type}]"
+
+                # Skip bot's own messages that are just cards with no meaningful text
+                if sender.get("sender_type") == "app" and text in ("[card]", "[interactive]"):
+                    continue
+
+                messages.append({
+                    "sender_id": sender.get("id", ""),
+                    "sender_type": sender.get("sender_type", ""),
+                    "msg_type": msg_type,
+                    "text": text[:500],
+                    "message_id": item.get("message_id", ""),
+                    "create_time": item.get("create_time", ""),
+                })
+
+            return {"status": "ok", "count": len(messages), "messages": messages}
+        except Exception as e:
+            return {"status": "error", "message": f"Read messages error: {e}"}
+
+    async def _handle_send_reaction(self, message_id: str, emoji: str) -> dict:
+        """Send an emoji reaction to a message."""
+        try:
+            token = await self.cards._get_token()
+            resp = await self.http.post(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"reaction_type": {"emoji_type": emoji}},
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                return {"status": "ok"}
+            return {"status": "error", "message": f"Send reaction failed: {data.get('msg', '')}"}
+        except Exception as e:
+            return {"status": "error", "message": f"Send reaction error: {e}"}
 
     # ── Feishu Doc / Spreadsheet creation ───────────────────────
 
