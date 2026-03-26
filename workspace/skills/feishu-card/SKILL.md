@@ -6,7 +6,7 @@ Use this skill when creating dynamic visual content: dashboards, reports, option
 
 ## Limits & Pitfalls
 
-**Size:** Card JSON must stay under **28 KB**. If content is too rich, split into multiple `reply()` calls.
+**Size:** Card JSON must stay under **28 KB**. If content is too rich, split into multiple messages.
 
 **CardKit incompatibilities** — these fields cause silent failures via CardKit streaming API:
 - **`row_height`** on tables — do NOT set it; omit the field entirely
@@ -14,7 +14,7 @@ Use this skill when creating dynamic visual content: dashboards, reports, option
 
 ## Card Structure (V2 Only)
 
-All cards MUST use V2 format. Pass the JSON as the `text` argument to `reply(request_id, text)`.
+All cards MUST use V2 format. Pass the JSON as the `text` argument to `reply_card(request_id, text=<card_json>, done=true)`.
 
 ```json
 {

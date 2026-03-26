@@ -1,6 +1,6 @@
 """MCP server entry point for the Feishu Channel.
 
-Declares claude/channel capability, exposes update_status/reply/reply_file tools,
+Declares claude/channel capability, exposes reply/reply_card/reply_file tools,
 starts Feishu WebSocket listener in background, connects to Claude Code via stdio.
 """
 
@@ -36,28 +36,29 @@ else:
 
 TOOLS = [
     types.Tool(
-        name="update_status",
-        description="Show progress to the user while working on a multi-step task. Auto-creates a Feishu card on first call. Call repeatedly to update status as you move through steps. For quick replies, skip this and call reply() directly.",
+        name="reply",
+        description="Send a text message to a Feishu chat. Can be called multiple times — each call sends a separate message bubble, like real texting. This is the ONLY way the user sees your response — plain text output is invisible to them. Use for casual chat, quick answers, or when you want to send multiple short messages naturally.",
         inputSchema={
             "type": "object",
             "properties": {
-                "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-                "status": {"type": "string", "description": "Short status in card header (keep under 15 chars), e.g. '搜索中...', '生成报告...'"},
-                "text": {"type": "string", "description": "Description of what you're currently doing"},
-                "emoji": {"type": "string", "description": "Emoji for the header, e.g. '🔍', '💻', '🎨', '⏳'. Choose based on what you're doing.", "default": "⏳"},
-                "template": {"type": "string", "description": "Header color theme: blue, wathet, turquoise, green, yellow, orange, red, carmine, violet, purple, indigo, grey, default", "default": "indigo"},
+                "chat_id": {"type": "string", "description": "Feishu chat to send to"},
+                "text": {"type": "string", "description": "Message text"},
             },
-            "required": ["request_id", "status", "text"],
+            "required": ["chat_id", "text"],
         },
     ),
     types.Tool(
-        name="reply",
-        description="Send final response text and seal the card. ONE-SHOT: can only be called ONCE per request_id. This is the ONLY way the user sees your text response — plain text output is invisible to them. For simple replies, call this directly without update_status. Always end your response flow with this.",
+        name="reply_card",
+        description="Send or update a Feishu interactive card. Use for multi-step tasks where you want to show progress, or for structured responses (V2 card JSON). Combines status updates and final response into one tool. Call with done=false to show progress, done=true to finalize.",
         inputSchema={
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-                "text": {"type": "string", "description": "Final response text"},
+                "status": {"type": "string", "description": "Short status in card header (keep under 15 chars), e.g. 'Searching...', 'Writing code...'"},
+                "text": {"type": "string", "description": "Card body text — progress description when updating, final response when finalizing. Can also be a V2 card JSON string when done=true."},
+                "done": {"type": "boolean", "description": "false = update progress (card stays active), true = finalize card (seals it, no more updates)", "default": False},
+                "emoji": {"type": "string", "description": "Emoji for the header, e.g. '🔍', '💻', '🎨', '⏳'. Only used when done=false.", "default": "⏳"},
+                "template": {"type": "string", "description": "Header color theme: blue, wathet, turquoise, green, yellow, orange, red, carmine, violet, purple, indigo, grey, default", "default": "indigo"},
             },
             "required": ["request_id", "text"],
         },
@@ -331,12 +332,15 @@ class FeishuChannel:
 
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-            if name == "update_status":
-                result = await cards.update_card(
-                    arguments["request_id"], arguments["status"], arguments["text"],
-                    emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
-            elif name == "reply":
-                result = await cards.finalize_card(arguments["request_id"], arguments["text"])
+            if name == "reply":
+                result = await channel._handle_send_text(arguments["chat_id"], arguments["text"])
+            elif name == "reply_card":
+                if arguments.get("done", False):
+                    result = await cards.finalize_card(arguments["request_id"], arguments["text"])
+                else:
+                    result = await cards.update_card(
+                        arguments["request_id"], arguments.get("status", ""), arguments["text"],
+                        emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
             elif name == "reply_file":
                 result = await cards.upload_and_send_file(arguments["chat_id"], arguments["file_path"])
             elif name == "reply_image":
@@ -512,7 +516,7 @@ class FeishuChannel:
         elif message_type == "post":
             content = await self._process_post_content(content, message_id)
 
-        # Defer card creation — card appears only when Claude calls update_status/reply
+        # Defer card creation — card appears only when Claude calls reply_card
         self.cards.register_pending(request_id, chat_id, message_id)
 
         # Inject user profile into meta
@@ -537,6 +541,33 @@ class FeishuChannel:
             await self.cards.create_card(request_id, chat_id, "")
 
         await self._send_channel_notification(content, meta)
+
+    # ── Text message (post with markdown) ────────────────────────────
+
+    async def _handle_send_text(self, chat_id: str, text: str) -> dict:
+        """Send a text message via Feishu post format with markdown rendering.
+        Supports: **bold**, *italic*, ~~strikethrough~~, [links](url), lists, quotes, code blocks.
+        Can be called multiple times — each call sends a separate message bubble."""
+        try:
+            token = await self.cards._get_token()
+            # Use the md tag in post format — renders markdown natively in Feishu
+            post_body = {"zh_cn": {"title": "", "content": [[{"tag": "md", "text": text}]]}}
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={
+                    "receive_id": chat_id,
+                    "msg_type": "post",
+                    "content": json.dumps(post_body),
+                },
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Send text failed: {data}"}
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error("Send text failed: %s", e)
+            return {"status": "error", "message": f"Send text failed: {e}"}
 
     # ── Image reply ────────────────────────────────────────────────
 

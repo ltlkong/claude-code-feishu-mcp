@@ -29,7 +29,7 @@ You (Dispatcher / Claude)
 | File analysis (PDF/Excel/images) | **Claude sub-agent** | Needs Read tool + reasoning |
 | Data processing / calculations | **Claude sub-agent** | Needs Python |
 | Cross-reference verification | **Claude sub-agent** (WebSearch) | Search from different angle |
-| Progress updates | **You (dispatcher)** | Needs Feishu `update_status` |
+| Progress updates | **You (dispatcher)** | Needs Feishu `reply_card` |
 | Report writing & delivery | **You (dispatcher)** | Needs deep reasoning + Feishu tools |
 
 ## Scripts
@@ -69,21 +69,21 @@ Every phase produces a **required artifact**. You MUST produce the artifact befo
 
 **Why this matters:** Past failures happened because phases 3-5 were skipped — report was written from raw search output without state management, source tiering, or verification. The result had no citations and unverified claims.
 
-**Feishu rule:** Call `update_status(request_id, status, text)` at the START of every phase. The user is remote — status is their only visibility.
+**Feishu rule:** Call `reply_card(request_id, status, text)` at the START of every phase. The user is remote — status is their only visibility.
 
 ---
 
 ### Phase 1: Clarify Intent
 
 ```
-update_status(request_id, "Clarifying...", "Understanding your research request")
+reply_card(request_id, "Clarifying...", "Understanding your research request")
 ```
 
 **Before doing ANY research, clarify the scope.** Two paths:
 
-**Path A — User gave vague request:** Ask 2-4 targeted clarifying questions via `reply()`. Wait for response before proceeding. Use a Feishu V2 card with structured options if the questions have discrete choices (e.g. depth level, region focus, output format).
+**Path A — User gave vague request:** Ask 2-4 targeted clarifying questions via `reply(chat_id, text)`. Wait for response before proceeding. Use a Feishu V2 card with structured options if the questions have discrete choices (e.g. depth level, region focus, output format).
 
-**Path B — User gave detailed requirements (specific angles, data points, constraints):** Skip clarification, go straight to planning. Acknowledge what you understood in `update_status`.
+**Path B — User gave detailed requirements (specific angles, data points, constraints):** Skip clarification, go straight to planning. Acknowledge what you understood in `reply_card`.
 
 **After scope is clear, decompose and plan:**
 
@@ -107,7 +107,7 @@ echo '## Coverage Checklist
 ### Phase 2: Search (Claude Sub-Agents in Parallel)
 
 ```
-update_status(request_id, "Searching...", "Launching N parallel search agents")
+reply_card(request_id, "Searching...", "Launching N parallel search agents")
 ```
 
 Dispatch Claude sub-agents using the Agent tool. Each sub-agent uses `WebSearch` for discovery and `WebFetch` for deep page reading.
@@ -151,7 +151,7 @@ Agent(
 > **MANDATORY GATE — You MUST run this before Phase 4.**
 
 ```
-update_status(request_id, "Processing results...", "Checking collected findings")
+reply_card(request_id, "Processing results...", "Checking collected findings")
 ```
 
 ```bash
@@ -177,7 +177,7 @@ echo '[
 > **MANDATORY GATE — Run these exact commands.**
 
 ```
-update_status(request_id, "Checking coverage...", "Verifying all angles are covered")
+reply_card(request_id, "Checking coverage...", "Verifying all angles are covered")
 ```
 
 ```bash
@@ -200,7 +200,7 @@ python3 $SKILL/compare_data.py coverage --id $SESSION_ID
 > Past failure: skipping this step produced a report with unverified claims and no source tiers.
 
 ```
-update_status(request_id, "Verifying...", "Cross-checking sources and claims")
+reply_card(request_id, "Verifying...", "Cross-checking sources and claims")
 ```
 
 **5a. Collect and tier all sources:**
@@ -248,7 +248,7 @@ Before writing, organize data into narrative structure:
 > **MANDATORY GATE — You MUST read the state file before writing.**
 
 ```
-update_status(request_id, "Writing report...", "Synthesizing findings")
+reply_card(request_id, "Writing report...", "Synthesizing findings")
 ```
 
 **Step 1 — Read state file:**
@@ -280,7 +280,7 @@ python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
 
 ### Phase 8: Deliver via Feishu + Follow-ups
 
-**CRITICAL: `reply()` can only be called ONCE per request_id.**
+**CRITICAL: `reply_card(done=true)` can only be called ONCE per request_id (it seals the card).**
 
 **Leverage all Feishu MCP tools for rich delivery:**
 
@@ -299,12 +299,10 @@ python3 $SKILL/sources.py collect --id $SESSION_ID --format markdown
 - For reports with inline images (charts generated as PNG), use `reply_post(chat_id, content)` to mix text and images in one message.
 
 **Delivery strategy (choose based on report length):**
-- **Short (<4KB):** `reply(request_id, markdown_text)` — plain text card
-- **Medium (<28KB):** `reply(request_id, v2_card_json)` — V2 card with charts and collapsible panels
-- **Long (>28KB):** `reply(request_id, summary_with_key_findings)` + `create_doc(...)` or `reply_file(...)` for full report
-- **Data-heavy:** `reply(request_id, summary)` + `create_bitable(...)` for interactive data
-
-Plan the split upfront — don't split because you forgot reply() is one-shot.
+- **Short (<4KB):** `reply_card(request_id, text=markdown_text, done=true)` — plain text card
+- **Medium (<28KB):** `reply_card(request_id, text=v2_card_json, done=true)` — V2 card with charts and collapsible panels
+- **Long (>28KB):** `reply_card(request_id, text=summary, done=true)` + `create_doc(...)` or `reply_file(...)` for full report
+- **Data-heavy:** `reply_card(request_id, text=summary, done=true)` + `create_bitable(...)` for interactive data
 
 Include 2-3 specific follow-up research directions in the final reply.
 
@@ -324,7 +322,7 @@ Include 2-3 specific follow-up research directions in the final reply.
 10. **Every claim has a clickable source link** — no exceptions. Source list at end with tiers.
 11. **NEVER fabricate data** — if a number can't be found, say "data unavailable." Sub-agent prompts must include "NEVER fabricate numbers." Better to have gaps than fake data.
 12. **Source list is MANDATORY in final report** — run `sources.py collect` and APPEND the full output to the end of the report. This was forgotten multiple times. The report is NOT complete without it.
-11. **Live progress via Feishu** — call `update_status()` at the start of every phase.
+11. **Live progress via Feishu** — call `reply_card()` at the start of every phase.
 12. **Feishu delivery** — use MCP tools (`reply`, `reply_file`, `reply_image`, `reply_post`, `create_doc`, `create_bitable`). Plain text output does NOT reach the user.
 13. **Rich delivery when it fits** — V2 charts, Bitable, cloud docs available but not mandatory.
 14. **Limits:** 3 search rounds max / user stop.
