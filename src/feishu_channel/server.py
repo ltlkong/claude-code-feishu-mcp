@@ -206,6 +206,18 @@ TOOLS = [
             "required": ["chat_id", "user_id", "profile"],
         },
     ),
+    types.Tool(
+        name="search_wiki",
+        description="Search Feishu knowledge base (知识库/Wiki). Returns matching wiki nodes with titles, URLs, and document types. Use for finding company docs, knowledge articles, and wiki pages.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword (max 50 chars)"},
+                "space_id": {"type": "string", "description": "Optional: specific knowledge space ID. Omit to search all spaces.", "default": ""},
+            },
+            "required": ["query"],
+        },
+    ),
 ]
 
 
@@ -291,6 +303,9 @@ class FeishuChannel:
             elif name == "update_profile":
                 result = channel._handle_update_profile(
                     arguments["chat_id"], arguments["user_id"], arguments["profile"])
+            elif name == "search_wiki":
+                result = await channel._handle_search_wiki(
+                    arguments["query"], arguments.get("space_id", ""))
             else:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
@@ -695,6 +710,41 @@ class FeishuChannel:
             with open(filepath) as f:
                 return f.read().strip()
         return ""
+
+    # ── Wiki search ───────────────────────────────────────────
+
+    async def _handle_search_wiki(self, query: str, space_id: str = "") -> dict:
+        """Search Feishu knowledge base (Wiki) for matching nodes."""
+        try:
+            token = await self.cards._get_token()
+            body = {"query": query[:50]}
+            if space_id:
+                body["space_id"] = space_id
+
+            resp = await self.http.post(
+                "https://open.feishu.cn/open-apis/wiki/v2/nodes/search",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+                params={"page_size": 20},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                return {"status": "error", "message": f"Wiki search failed: {data.get('msg', 'unknown error')}"}
+
+            items = data.get("data", {}).get("items", [])
+            results = []
+            for item in items:
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "node_id": item.get("node_id", ""),
+                    "obj_type": item.get("obj_type", ""),
+                    "space_id": item.get("space_id", ""),
+                })
+
+            return {"status": "ok", "count": len(results), "results": results}
+        except Exception as e:
+            return {"status": "error", "message": f"Wiki search error: {e}"}
 
     # ── Feishu Doc / Spreadsheet creation ───────────────────────
 
