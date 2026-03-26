@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # chat_id is auto-detected from the most recent Feishu message in the session
     heartbeat_model: str = "haiku"
     heartbeat_interval_minutes: int = 60
-    heartbeat_inactivity_minutes: int = 30
+    heartbeat_inactivity_minutes: int = 5
 
     # Pexels image search API (optional — enables search_image photo type)
     pexels_api_key: str = ""

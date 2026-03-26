@@ -556,26 +556,32 @@ class FeishuChannel:
         """Send a text message via Feishu post format with markdown rendering.
         Supports: **bold**, *italic*, ~~strikethrough~~, [links](url), lists, quotes, code blocks.
         Can be called multiple times — each call sends a separate message bubble."""
-        try:
-            token = await self.cards._get_token()
-            # Use the md tag in post format — renders markdown natively in Feishu
-            post_body = {"zh_cn": {"title": "", "content": [[{"tag": "md", "text": text}]]}}
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={
-                    "receive_id": chat_id,
-                    "msg_type": "post",
-                    "content": json.dumps(post_body),
-                },
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Send text failed: {data}"}
-            return {"status": "ok"}
-        except Exception as e:
-            logger.error("Send text failed: %s", e)
-            return {"status": "error", "message": f"Send text failed: {e}"}
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                # Use the md tag in post format — renders markdown natively in Feishu
+                post_body = {"zh_cn": {"title": "", "content": [[{"tag": "md", "text": text}]]}}
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "post",
+                        "content": json.dumps(post_body),
+                    },
+                )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Send text: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") != 0:
+                    return {"status": "error", "message": f"Send text failed: {data}"}
+                return {"status": "ok"}
+            except Exception as e:
+                logger.error("Send text failed: %s", e)
+                return {"status": "error", "message": f"Send text failed: {e}"}
+        return {"status": "error", "message": "Send text failed after retry"}
 
     # ── Image reply ────────────────────────────────────────────────
 
@@ -584,38 +590,48 @@ class FeishuChannel:
         import os
         if not os.path.exists(image_path):
             return {"status": "error", "message": f"File not found: {image_path}"}
-        try:
-            token = await self.cards._get_token()
-            # Step 1: Upload image to get image_key
-            with open(image_path, "rb") as f:
-                resp = await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/images",
-                    headers={"Authorization": f"Bearer {token}"},
-                    data={"image_type": "message"},
-                    files={"image": (os.path.basename(image_path), f)},
-                )
-            upload_data = resp.json()
-            if upload_data.get("code") != 0:
-                return {"status": "error", "message": f"Image upload failed: {upload_data}"}
-            image_key = upload_data["data"]["image_key"]
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                # Step 1: Upload image to get image_key
+                with open(image_path, "rb") as f:
+                    resp = await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/images",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"image_type": "message"},
+                        files={"image": (os.path.basename(image_path), f)},
+                    )
+                upload_data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(upload_data):
+                    logger.info("Image upload: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if upload_data.get("code") != 0:
+                    return {"status": "error", "message": f"Image upload failed: {upload_data}"}
+                image_key = upload_data["data"]["image_key"]
 
-            # Step 2: Send image message
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "receive_id": chat_id,
-                    "msg_type": "image",
-                    "content": json.dumps({"image_key": image_key}),
-                },
-            )
-            send_data = resp.json()
-            if send_data.get("code") != 0:
-                return {"status": "error", "message": f"Image send failed: {send_data}"}
-            return {"status": "ok", "image_key": image_key}
-        except Exception as e:
-            logger.error("Image reply failed: %s", e)
-            return {"status": "error", "message": f"Image reply failed: {e}"}
+                # Step 2: Send image message
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "image",
+                        "content": json.dumps({"image_key": image_key}),
+                    },
+                )
+                send_data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(send_data):
+                    logger.info("Image send: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if send_data.get("code") != 0:
+                    return {"status": "error", "message": f"Image send failed: {send_data}"}
+                return {"status": "ok", "image_key": image_key}
+            except Exception as e:
+                logger.error("Image reply failed: %s", e)
+                return {"status": "error", "message": f"Image reply failed: {e}"}
+        return {"status": "error", "message": "Image reply failed after retry"}
 
     # ── Post (rich text) reply ────────────────────────────────────
 
@@ -624,20 +640,26 @@ class FeishuChannel:
         import os
         if not os.path.exists(image_path):
             return None
-        try:
-            token = await self.cards._get_token()
-            with open(image_path, "rb") as f:
-                resp = await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/images",
-                    headers={"Authorization": f"Bearer {token}"},
-                    data={"image_type": "message"},
-                    files={"image": (os.path.basename(image_path), f)},
-                )
-            data = resp.json()
-            if data.get("code") == 0:
-                return data["data"]["image_key"]
-        except Exception as e:
-            logger.error("Image upload for post failed: %s", e)
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                with open(image_path, "rb") as f:
+                    resp = await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/images",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"image_type": "message"},
+                        files={"image": (os.path.basename(image_path), f)},
+                    )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Image upload for post: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") == 0:
+                    return data["data"]["image_key"]
+            except Exception as e:
+                logger.error("Image upload for post failed: %s", e)
+                return None
         return None
 
     async def _upload_video_for_keys(self, video_path: str) -> tuple[str | None, str | None]:
@@ -646,35 +668,41 @@ class FeishuChannel:
         import subprocess as _sp
         if not os.path.exists(video_path):
             return None, None
-        try:
-            token = await self.cards._get_token()
-            temp_dir = self.settings.temp_dir
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                temp_dir = self.settings.temp_dir
 
-            # Extract thumbnail
-            thumb_path = str(temp_dir / "post_video_thumb.jpg")
-            _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
-                     thumb_path, "-y"], capture_output=True, timeout=10)
+                # Extract thumbnail
+                thumb_path = str(temp_dir / "post_video_thumb.jpg")
+                _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
+                         thumb_path, "-y"], capture_output=True, timeout=10)
 
-            # Upload thumbnail
-            image_key = None
-            if os.path.exists(thumb_path):
-                image_key = await self._upload_image_for_key(thumb_path)
+                # Upload thumbnail
+                image_key = None
+                if os.path.exists(thumb_path):
+                    image_key = await self._upload_image_for_key(thumb_path)
 
-            # Upload video
-            file_name = os.path.basename(video_path)
-            with open(video_path, "rb") as f:
-                resp = await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/files",
-                    headers={"Authorization": f"Bearer {token}"},
-                    data={"file_type": "mp4", "file_name": file_name},
-                    files={"file": (file_name, f)},
-                )
-            data = resp.json()
-            file_key = data["data"]["file_key"] if data.get("code") == 0 else None
-            return file_key, image_key
-        except Exception as e:
-            logger.error("Video upload for post failed: %s", e)
-            return None, None
+                # Upload video
+                file_name = os.path.basename(video_path)
+                with open(video_path, "rb") as f:
+                    resp = await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/files",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data={"file_type": "mp4", "file_name": file_name},
+                        files={"file": (file_name, f)},
+                    )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Video upload for post: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                file_key = data["data"]["file_key"] if data.get("code") == 0 else None
+                return file_key, image_key
+            except Exception as e:
+                logger.error("Video upload for post failed: %s", e)
+                return None, None
+        return None, None
 
     async def _handle_reply_post(self, chat_id: str, title: str, content: list) -> dict:
         """Send a rich text post message with mixed text, images, videos, and links.
@@ -686,42 +714,48 @@ class FeishuChannel:
         - {"tag":"a", "text":"...", "href":"..."} — link
         - {"tag":"at", "user_id":"..."} — @mention
         """
-        try:
-            token = await self.cards._get_token()
-            # Auto-upload local files
-            for line in content:
-                for elem in line:
-                    # Auto-upload images
-                    if elem.get("tag") == "img" and "image_path" in elem and "image_key" not in elem:
-                        key = await self._upload_image_for_key(elem["image_path"])
-                        if key:
-                            elem["image_key"] = key
-                        elem.pop("image_path", None)
-                    # Auto-upload videos
-                    if elem.get("tag") == "media" and "video_path" in elem and "file_key" not in elem:
-                        file_key, image_key = await self._upload_video_for_keys(elem["video_path"])
-                        if file_key:
-                            elem["file_key"] = file_key
-                        if image_key:
-                            elem["image_key"] = image_key
-                        elem.pop("video_path", None)
-            post_body = {"zh_cn": {"title": title, "content": content}}
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "receive_id": chat_id,
-                    "msg_type": "post",
-                    "content": json.dumps(post_body),
-                },
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Post send failed: {data}"}
-            return {"status": "ok"}
-        except Exception as e:
-            logger.error("Post reply failed: %s", e)
-            return {"status": "error", "message": f"Post reply failed: {e}"}
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                # Auto-upload local files
+                for line in content:
+                    for elem in line:
+                        # Auto-upload images
+                        if elem.get("tag") == "img" and "image_path" in elem and "image_key" not in elem:
+                            key = await self._upload_image_for_key(elem["image_path"])
+                            if key:
+                                elem["image_key"] = key
+                            elem.pop("image_path", None)
+                        # Auto-upload videos
+                        if elem.get("tag") == "media" and "video_path" in elem and "file_key" not in elem:
+                            file_key, image_key = await self._upload_video_for_keys(elem["video_path"])
+                            if file_key:
+                                elem["file_key"] = file_key
+                            if image_key:
+                                elem["image_key"] = image_key
+                            elem.pop("video_path", None)
+                post_body = {"zh_cn": {"title": title, "content": content}}
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "post",
+                        "content": json.dumps(post_body),
+                    },
+                )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Post reply: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") != 0:
+                    return {"status": "error", "message": f"Post send failed: {data}"}
+                return {"status": "ok"}
+            except Exception as e:
+                logger.error("Post reply failed: %s", e)
+                return {"status": "error", "message": f"Post reply failed: {e}"}
+        return {"status": "error", "message": "Post reply failed after retry"}
 
     # ── Video reply ────────────────────────────────────────────────
 
@@ -731,63 +765,77 @@ class FeishuChannel:
         import subprocess as _sp
         if not os.path.exists(video_path):
             return {"status": "error", "message": f"File not found: {video_path}"}
-        try:
-            token = await self.cards._get_token()
-            temp_dir = self.settings.temp_dir
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                temp_dir = self.settings.temp_dir
 
-            # Step 1: Extract thumbnail from first frame using ffmpeg
-            thumb_path = str(temp_dir / "video_thumb.jpg")
-            _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
-                     thumb_path, "-y"], capture_output=True, timeout=10)
+                # Step 1: Extract thumbnail from first frame using ffmpeg
+                thumb_path = str(temp_dir / "video_thumb.jpg")
+                _sp.run(["ffmpeg", "-i", video_path, "-vf", "select=eq(n\\,0)", "-frames:v", "1",
+                         thumb_path, "-y"], capture_output=True, timeout=10)
 
-            # Step 2: Upload thumbnail image to get image_key
-            image_key = ""
-            if os.path.exists(thumb_path):
-                with open(thumb_path, "rb") as f:
+                # Step 2: Upload thumbnail image to get image_key
+                image_key = ""
+                if os.path.exists(thumb_path):
+                    with open(thumb_path, "rb") as f:
+                        resp = await self.http.post(
+                            "https://open.feishu.cn/open-apis/im/v1/images",
+                            headers={"Authorization": f"Bearer {token}"},
+                            data={"image_type": "message"},
+                            files={"image": ("thumb.jpg", f)},
+                        )
+                    upload_data = resp.json()
+                    if attempt == 0 and self.cards._is_token_error(upload_data):
+                        logger.info("Video thumb upload: token expired, refreshing and retrying")
+                        self.cards._invalidate_token()
+                        continue
+                    if upload_data.get("code") == 0:
+                        image_key = upload_data["data"]["image_key"]
+
+                # Step 3: Upload video file to get file_key
+                file_name = os.path.basename(video_path)
+                with open(video_path, "rb") as f:
                     resp = await self.http.post(
-                        "https://open.feishu.cn/open-apis/im/v1/images",
+                        "https://open.feishu.cn/open-apis/im/v1/files",
                         headers={"Authorization": f"Bearer {token}"},
-                        data={"image_type": "message"},
-                        files={"image": ("thumb.jpg", f)},
+                        data={"file_type": "mp4", "file_name": file_name},
+                        files={"file": (file_name, f)},
                     )
-                upload_data = resp.json()
-                if upload_data.get("code") == 0:
-                    image_key = upload_data["data"]["image_key"]
+                file_data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(file_data):
+                    logger.info("Video file upload: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if file_data.get("code") != 0:
+                    return {"status": "error", "message": f"Video upload failed: {file_data}"}
+                file_key = file_data["data"]["file_key"]
 
-            # Step 3: Upload video file to get file_key
-            file_name = os.path.basename(video_path)
-            with open(video_path, "rb") as f:
+                # Step 4: Send media message
+                content = {"file_key": file_key}
+                if image_key:
+                    content["image_key"] = image_key
                 resp = await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
                     headers={"Authorization": f"Bearer {token}"},
-                    data={"file_type": "mp4", "file_name": file_name},
-                    files={"file": (file_name, f)},
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": "media",
+                        "content": json.dumps(content),
+                    },
                 )
-            file_data = resp.json()
-            if file_data.get("code") != 0:
-                return {"status": "error", "message": f"Video upload failed: {file_data}"}
-            file_key = file_data["data"]["file_key"]
-
-            # Step 4: Send media message
-            content = {"file_key": file_key}
-            if image_key:
-                content["image_key"] = image_key
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "receive_id": chat_id,
-                    "msg_type": "media",
-                    "content": json.dumps(content),
-                },
-            )
-            send_data = resp.json()
-            if send_data.get("code") != 0:
-                return {"status": "error", "message": f"Video send failed: {send_data}"}
-            return {"status": "ok", "file_key": file_key}
-        except Exception as e:
-            logger.error("Video reply failed: %s", e)
-            return {"status": "error", "message": f"Video reply failed: {e}"}
+                send_data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(send_data):
+                    logger.info("Video send: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if send_data.get("code") != 0:
+                    return {"status": "error", "message": f"Video send failed: {send_data}"}
+                return {"status": "ok", "file_key": file_key}
+            except Exception as e:
+                logger.error("Video reply failed: %s", e)
+                return {"status": "error", "message": f"Video reply failed: {e}"}
+        return {"status": "error", "message": "Video reply failed after retry"}
 
     # ── Audio reply ────────────────────────────────────────────────
 
@@ -839,42 +887,48 @@ class FeishuChannel:
 
     async def _handle_search_docs(self, query: str, space_id: str = "") -> dict:
         """Search Feishu docs and knowledge base. Uses suite/docs-api/search which works with tenant_access_token."""
-        try:
-            token = await self.cards._get_token()
-            body: dict = {"search_key": query[:50], "count": 20, "offset": 0}
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                body: dict = {"search_key": query[:50], "count": 20, "offset": 0}
 
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
-                headers={"Authorization": f"Bearer {token}"},
-                json=body,
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Wiki search failed: {data.get('msg', 'unknown error')}"}
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Search docs: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") != 0:
+                    return {"status": "error", "message": f"Wiki search failed: {data.get('msg', 'unknown error')}"}
 
-            items = data.get("data", {}).get("docs_entities", [])
-            total = data.get("data", {}).get("total", 0)
-            results = []
-            for item in items:
-                doc_token = item.get("docs_token", "")
-                doc_type = item.get("docs_type", "doc")
-                # Construct URL based on doc type
-                if doc_type == "bitable":
-                    url = f"https://feishu.cn/base/{doc_token}"
-                elif doc_type == "sheet":
-                    url = f"https://feishu.cn/sheets/{doc_token}"
-                else:
-                    url = f"https://feishu.cn/docx/{doc_token}"
-                results.append({
-                    "title": item.get("title", ""),
-                    "url": url,
-                    "doc_token": doc_token,
-                    "doc_type": doc_type,
-                })
+                items = data.get("data", {}).get("docs_entities", [])
+                total = data.get("data", {}).get("total", 0)
+                results = []
+                for item in items:
+                    doc_token = item.get("docs_token", "")
+                    doc_type = item.get("docs_type", "doc")
+                    # Construct URL based on doc type
+                    if doc_type == "bitable":
+                        url = f"https://feishu.cn/base/{doc_token}"
+                    elif doc_type == "sheet":
+                        url = f"https://feishu.cn/sheets/{doc_token}"
+                    else:
+                        url = f"https://feishu.cn/docx/{doc_token}"
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "doc_token": doc_token,
+                        "doc_type": doc_type,
+                    })
 
-            return {"status": "ok", "count": len(results), "total": total, "results": results}
-        except Exception as e:
-            return {"status": "error", "message": f"Wiki search error: {e}"}
+                return {"status": "ok", "count": len(results), "total": total, "results": results}
+            except Exception as e:
+                return {"status": "error", "message": f"Wiki search error: {e}"}
+        return {"status": "error", "message": "Wiki search failed after retry"}
 
     # ── Image search (Pexels + Tenor) ──────────────────────────
 
@@ -934,79 +988,97 @@ class FeishuChannel:
     async def _handle_manage_task(self, action: str, summary: str = "", description: str = "",
                                    due: str = "", task_id: str = "", page_size: int = 20) -> dict:
         """Manage Feishu Tasks."""
-        try:
-            token = await self.cards._get_token()
-            headers = {"Authorization": f"Bearer {token}"}
-            base_url = "https://open.feishu.cn/open-apis/task/v1/tasks"
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                base_url = "https://open.feishu.cn/open-apis/task/v1/tasks"
 
-            if action == "create":
-                if not summary:
-                    return {"status": "error", "message": "summary required"}
-                body: dict = {
-                    "summary": summary,
-                    "origin": {
-                        "platform_i18n_name": '{"zh_cn": "小白", "en_us": "Xiaobai"}',
-                        "href": {"url": "", "title": ""},
-                    },
-                }
-                if description:
-                    body["description"] = description
-                if due:
-                    body["due"] = {"time": due, "is_all_day": False}
-                resp = await self.http.post(base_url, headers=headers, json=body)
-                data = resp.json()
-                if data.get("code") == 0:
-                    task = data.get("data", {}).get("task", {})
-                    return {"status": "ok", "task_id": task.get("id", ""), "summary": task.get("summary", "")}
-                return {"status": "error", "message": data.get("msg", "")}
+                if action == "create":
+                    if not summary:
+                        return {"status": "error", "message": "summary required"}
+                    body: dict = {
+                        "summary": summary,
+                        "origin": {
+                            "platform_i18n_name": '{"zh_cn": "小白", "en_us": "Xiaobai"}',
+                            "href": {"url": "", "title": ""},
+                        },
+                    }
+                    if description:
+                        body["description"] = description
+                    if due:
+                        body["due"] = {"time": due, "is_all_day": False}
+                    resp = await self.http.post(base_url, headers=headers, json=body)
+                    data = resp.json()
+                    if attempt == 0 and self.cards._is_token_error(data):
+                        logger.info("Manage task (create): token expired, refreshing and retrying")
+                        self.cards._invalidate_token()
+                        continue
+                    if data.get("code") == 0:
+                        task = data.get("data", {}).get("task", {})
+                        return {"status": "ok", "task_id": task.get("id", ""), "summary": task.get("summary", "")}
+                    return {"status": "error", "message": data.get("msg", "")}
 
-            elif action == "list":
-                resp = await self.http.get(base_url, headers=headers, params={"page_size": min(page_size, 50)})
-                data = resp.json()
-                if data.get("code") == 0:
-                    items = data.get("data", {}).get("items", [])
-                    tasks = []
-                    for t in items:
-                        tasks.append({
-                            "task_id": t.get("id", ""),
-                            "summary": t.get("summary", ""),
-                            "description": t.get("description", ""),
-                            "completed": t.get("complete_time", "0") != "0",
-                            "due": t.get("due", {}).get("time", "") if t.get("due") else "",
-                        })
-                    return {"status": "ok", "count": len(tasks), "tasks": tasks}
-                return {"status": "error", "message": data.get("msg", "")}
+                elif action == "list":
+                    resp = await self.http.get(base_url, headers=headers, params={"page_size": min(page_size, 50)})
+                    data = resp.json()
+                    if attempt == 0 and self.cards._is_token_error(data):
+                        logger.info("Manage task (list): token expired, refreshing and retrying")
+                        self.cards._invalidate_token()
+                        continue
+                    if data.get("code") == 0:
+                        items = data.get("data", {}).get("items", [])
+                        tasks = []
+                        for t in items:
+                            tasks.append({
+                                "task_id": t.get("id", ""),
+                                "summary": t.get("summary", ""),
+                                "description": t.get("description", ""),
+                                "completed": t.get("complete_time", "0") != "0",
+                                "due": t.get("due", {}).get("time", "") if t.get("due") else "",
+                            })
+                        return {"status": "ok", "count": len(tasks), "tasks": tasks}
+                    return {"status": "error", "message": data.get("msg", "")}
 
-            elif action == "update":
-                if not task_id:
-                    return {"status": "error", "message": "task_id required"}
-                body = {}
-                if summary:
-                    body["summary"] = summary
-                if description:
-                    body["description"] = description
-                if due:
-                    body["due"] = {"timestamp": due, "is_all_day": False}
-                resp = await self.http.patch(f"{base_url}/{task_id}", headers=headers, json=body)
-                data = resp.json()
-                if data.get("code") == 0:
-                    return {"status": "ok", "task_id": task_id}
-                return {"status": "error", "message": data.get("msg", "")}
+                elif action == "update":
+                    if not task_id:
+                        return {"status": "error", "message": "task_id required"}
+                    body = {}
+                    if summary:
+                        body["summary"] = summary
+                    if description:
+                        body["description"] = description
+                    if due:
+                        body["due"] = {"timestamp": due, "is_all_day": False}
+                    resp = await self.http.patch(f"{base_url}/{task_id}", headers=headers, json=body)
+                    data = resp.json()
+                    if attempt == 0 and self.cards._is_token_error(data):
+                        logger.info("Manage task (update): token expired, refreshing and retrying")
+                        self.cards._invalidate_token()
+                        continue
+                    if data.get("code") == 0:
+                        return {"status": "ok", "task_id": task_id}
+                    return {"status": "error", "message": data.get("msg", "")}
 
-            elif action == "complete":
-                if not task_id:
-                    return {"status": "error", "message": "task_id required"}
-                resp = await self.http.post(f"{base_url}/{task_id}/complete", headers=headers, json={})
-                data = resp.json()
-                if data.get("code") == 0:
-                    return {"status": "ok", "task_id": task_id, "completed": True}
-                return {"status": "error", "message": data.get("msg", "")}
+                elif action == "complete":
+                    if not task_id:
+                        return {"status": "error", "message": "task_id required"}
+                    resp = await self.http.post(f"{base_url}/{task_id}/complete", headers=headers, json={})
+                    data = resp.json()
+                    if attempt == 0 and self.cards._is_token_error(data):
+                        logger.info("Manage task (complete): token expired, refreshing and retrying")
+                        self.cards._invalidate_token()
+                        continue
+                    if data.get("code") == 0:
+                        return {"status": "ok", "task_id": task_id, "completed": True}
+                    return {"status": "error", "message": data.get("msg", "")}
 
-            else:
-                return {"status": "error", "message": f"Unknown action: {action}"}
+                else:
+                    return {"status": "error", "message": f"Unknown action: {action}"}
 
-        except Exception as e:
-            return {"status": "error", "message": f"Task error: {e}"}
+            except Exception as e:
+                return {"status": "error", "message": f"Task error: {e}"}
+        return {"status": "error", "message": "Task operation failed after retry"}
 
     # ── Bitable CRUD ───────────────────────────────────────────
 
@@ -1091,315 +1163,339 @@ class FeishuChannel:
 
     async def _handle_read_messages(self, chat_id: str, count: int = 10) -> dict:
         """Read recent messages from a Feishu chat."""
-        try:
-            count = min(count, 50)
-            token = await self.cards._get_token()
-            resp = await self.http.get(
-                "https://open.feishu.cn/open-apis/im/v1/messages",
-                headers={"Authorization": f"Bearer {token}"},
-                params={
-                    "container_id_type": "chat",
-                    "container_id": chat_id,
-                    "sort_type": "ByCreateTimeDesc",
-                    "page_size": count,
-                },
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Read messages failed: {data.get('msg', '')}"}
-
-            items = data.get("data", {}).get("items", [])
-            messages = []
-            for item in items:
-                sender = item.get("sender", {})
-                body = item.get("body", {}).get("content", "")
-                msg_type = item.get("msg_type", "text")
-
-                # Extract text from content
-                text = ""
-                try:
-                    content_json = json.loads(body)
-                    if msg_type == "text":
-                        text = content_json.get("text", "")
-                    elif msg_type == "interactive":
-                        # Card — extract text elements
-                        texts = []
-                        for row in content_json.get("elements", []):
-                            if isinstance(row, list):
-                                for el in row:
-                                    if isinstance(el, dict) and el.get("tag") == "text" and el.get("text"):
-                                        texts.append(el["text"])
-                        title = content_json.get("title", "")
-                        text = (title + " " + " ".join(texts)).strip() if texts or title else "[card]"
-                    elif msg_type == "post":
-                        texts = []
-                        for row in content_json.get("content", []):
-                            if isinstance(row, list):
-                                for el in row:
-                                    if isinstance(el, dict) and el.get("text"):
-                                        texts.append(el["text"])
-                        text = " ".join(texts) if texts else "[post]"
-                    else:
-                        text = f"[{msg_type}]"
-                except (json.JSONDecodeError, TypeError):
-                    text = body[:200] if body else f"[{msg_type}]"
-
-                # Skip bot's own messages that are just cards with no meaningful text
-                if sender.get("sender_type") == "app" and text in ("[card]", "[interactive]"):
+        for attempt in range(2):
+            try:
+                count = min(count, 50)
+                token = await self.cards._get_token()
+                resp = await self.http.get(
+                    "https://open.feishu.cn/open-apis/im/v1/messages",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={
+                        "container_id_type": "chat",
+                        "container_id": chat_id,
+                        "sort_type": "ByCreateTimeDesc",
+                        "page_size": count,
+                    },
+                )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Read messages: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
                     continue
+                if data.get("code") != 0:
+                    return {"status": "error", "message": f"Read messages failed: {data.get('msg', '')}"}
 
-                messages.append({
-                    "sender_id": sender.get("id", ""),
-                    "sender_type": sender.get("sender_type", ""),
-                    "msg_type": msg_type,
-                    "text": text[:500],
-                    "message_id": item.get("message_id", ""),
-                    "create_time": item.get("create_time", ""),
-                })
+                items = data.get("data", {}).get("items", [])
+                messages = []
+                for item in items:
+                    sender = item.get("sender", {})
+                    body = item.get("body", {}).get("content", "")
+                    msg_type = item.get("msg_type", "text")
 
-            return {"status": "ok", "count": len(messages), "messages": messages}
-        except Exception as e:
-            return {"status": "error", "message": f"Read messages error: {e}"}
+                    # Extract text from content
+                    text = ""
+                    try:
+                        content_json = json.loads(body)
+                        if msg_type == "text":
+                            text = content_json.get("text", "")
+                        elif msg_type == "interactive":
+                            # Card — extract text elements
+                            texts = []
+                            for row in content_json.get("elements", []):
+                                if isinstance(row, list):
+                                    for el in row:
+                                        if isinstance(el, dict) and el.get("tag") == "text" and el.get("text"):
+                                            texts.append(el["text"])
+                            title = content_json.get("title", "")
+                            text = (title + " " + " ".join(texts)).strip() if texts or title else "[card]"
+                        elif msg_type == "post":
+                            texts = []
+                            for row in content_json.get("content", []):
+                                if isinstance(row, list):
+                                    for el in row:
+                                        if isinstance(el, dict) and el.get("text"):
+                                            texts.append(el["text"])
+                            text = " ".join(texts) if texts else "[post]"
+                        else:
+                            text = f"[{msg_type}]"
+                    except (json.JSONDecodeError, TypeError):
+                        text = body[:200] if body else f"[{msg_type}]"
+
+                    # Skip bot's own messages that are just cards with no meaningful text
+                    if sender.get("sender_type") == "app" and text in ("[card]", "[interactive]"):
+                        continue
+
+                    messages.append({
+                        "sender_id": sender.get("id", ""),
+                        "sender_type": sender.get("sender_type", ""),
+                        "msg_type": msg_type,
+                        "text": text[:500],
+                        "message_id": item.get("message_id", ""),
+                        "create_time": item.get("create_time", ""),
+                    })
+
+                return {"status": "ok", "count": len(messages), "messages": messages}
+            except Exception as e:
+                return {"status": "error", "message": f"Read messages error: {e}"}
+        return {"status": "error", "message": "Read messages failed after retry"}
 
     async def _handle_send_reaction(self, message_id: str, emoji: str) -> dict:
         """Send an emoji reaction to a message."""
-        try:
-            token = await self.cards._get_token()
-            resp = await self.http.post(
-                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"reaction_type": {"emoji_type": emoji}},
-            )
-            data = resp.json()
-            if data.get("code") == 0:
-                return {"status": "ok"}
-            return {"status": "error", "message": f"Send reaction failed: {data.get('msg', '')}"}
-        except Exception as e:
-            return {"status": "error", "message": f"Send reaction error: {e}"}
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                resp = await self.http.post(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"reaction_type": {"emoji_type": emoji}},
+                )
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Send reaction: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") == 0:
+                    return {"status": "ok"}
+                return {"status": "error", "message": f"Send reaction failed: {data.get('msg', '')}"}
+            except Exception as e:
+                return {"status": "error", "message": f"Send reaction error: {e}"}
+        return {"status": "error", "message": "Send reaction failed after retry"}
 
     # ── Feishu Doc / Spreadsheet creation ───────────────────────
 
     async def _handle_create_doc(self, title: str, content: list, chat_id: str = "") -> dict:
         """Create a Feishu cloud document with structured content."""
-        try:
-            token = await self.cards._get_token()
-            # Step 1: Create document
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/docx/v1/documents",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"title": title},
-            )
-            data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Doc creation failed: {data}"}
-            doc_id = data["data"]["document"]["document_id"]
-
-            # Step 2: Add content blocks
-            if content:
-                block_type_map = {"heading1": 3, "heading2": 4, "heading3": 5, "text": 2, "bullet": 12, "ordered": 13, "code": 14, "quote": 15}
-                children = []
-                for block in content:
-                    bt = block.get("type", "text")
-                    text = block.get("text", "")
-                    block_type = block_type_map.get(bt, 2)
-                    block_key = bt if bt in block_type_map else "text"
-                    if block_key in ("heading1", "heading2", "heading3"):
-                        children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
-                    elif block_key == "code":
-                        lang = block.get("language", "plain_text")
-                        children.append({"block_type": block_type, "code": {"elements": [{"text_run": {"content": text}}], "language": lang}})
-                    else:
-                        children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
-
-                await self.http.post(
-                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"children": children, "index": 0},
-                )
-
-            # Step 3: Get the URL from the API response (or construct fallback)
+        for attempt in range(2):
             try:
-                doc_resp = await self.http.get(
-                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}",
+                token = await self.cards._get_token()
+                # Step 1: Create document
+                resp = await self.http.post(
+                    "https://open.feishu.cn/open-apis/docx/v1/documents",
                     headers={"Authorization": f"Bearer {token}"},
+                    json={"title": title},
                 )
-                doc_data = doc_resp.json()
-                url = doc_data.get("data", {}).get("document", {}).get("url", "")
-                if not url:
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Create doc: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                if data.get("code") != 0:
+                    return {"status": "error", "message": f"Doc creation failed: {data}"}
+                doc_id = data["data"]["document"]["document_id"]
+
+                # Step 2: Add content blocks
+                if content:
+                    block_type_map = {"heading1": 3, "heading2": 4, "heading3": 5, "text": 2, "bullet": 12, "ordered": 13, "code": 14, "quote": 15}
+                    children = []
+                    for block in content:
+                        bt = block.get("type", "text")
+                        text = block.get("text", "")
+                        block_type = block_type_map.get(bt, 2)
+                        block_key = bt if bt in block_type_map else "text"
+                        if block_key in ("heading1", "heading2", "heading3"):
+                            children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
+                        elif block_key == "code":
+                            lang = block.get("language", "plain_text")
+                            children.append({"block_type": block_type, "code": {"elements": [{"text_run": {"content": text}}], "language": lang}})
+                        else:
+                            children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
+
+                    await self.http.post(
+                        f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={"children": children, "index": 0},
+                    )
+
+                # Step 3: Get the URL from the API response (or construct fallback)
+                try:
+                    doc_resp = await self.http.get(
+                        f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    doc_data = doc_resp.json()
+                    url = doc_data.get("data", {}).get("document", {}).get("url", "")
+                    if not url:
+                        url = f"https://feishu.cn/docx/{doc_id}"
+                except Exception:
                     url = f"https://feishu.cn/docx/{doc_id}"
-            except Exception:
-                url = f"https://feishu.cn/docx/{doc_id}"
 
-            # Step 4: Optionally send plain link to chat (renders as doc preview card)
-            if chat_id:
-                await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={
-                        "receive_id": chat_id,
-                        "msg_type": "text",
-                        "content": json.dumps({"text": url}),
-                    },
-                )
+                # Step 4: Optionally send plain link to chat (renders as doc preview card)
+                if chat_id:
+                    await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={
+                            "receive_id": chat_id,
+                            "msg_type": "text",
+                            "content": json.dumps({"text": url}),
+                        },
+                    )
 
-            return {"status": "ok", "document_id": doc_id, "url": url}
-        except Exception as e:
-            logger.error("Create doc failed: %s", e)
-            return {"status": "error", "message": f"Create doc failed: {e}"}
+                return {"status": "ok", "document_id": doc_id, "url": url}
+            except Exception as e:
+                logger.error("Create doc failed: %s", e)
+                return {"status": "error", "message": f"Create doc failed: {e}"}
+        return {"status": "error", "message": "Create doc failed after retry"}
 
     async def _handle_create_bitable(self, title: str, fields: list = None, records: list = None,
                                       views: list = None, chat_id: str = "") -> dict:
         """Create a Feishu Bitable (多维表格) with custom fields, data, and views."""
-        try:
-            token = await self.cards._get_token()
-            field_type_map = {
-                "text": 1, "number": 2, "single_select": 3, "multi_select": 4,
-                "date": 5, "checkbox": 7, "user": 11, "phone": 13, "url": 15,
-                "attachment": 17, "created_time": 1001, "modified_time": 1002,
-            }
-            base = "https://open.feishu.cn/open-apis/bitable/v1/apps"
-            headers = {"Authorization": f"Bearer {token}"}
+        for attempt in range(2):
+            try:
+                token = await self.cards._get_token()
+                field_type_map = {
+                    "text": 1, "number": 2, "single_select": 3, "multi_select": 4,
+                    "date": 5, "checkbox": 7, "user": 11, "phone": 13, "url": 15,
+                    "attachment": 17, "created_time": 1001, "modified_time": 1002,
+                }
+                base = "https://open.feishu.cn/open-apis/bitable/v1/apps"
+                headers = {"Authorization": f"Bearer {token}"}
 
-            def _check(data: dict, step: str) -> None:
-                if data.get("code") != 0:
-                    logger.error("Bitable %s failed: %s", step, data)
-                    raise RuntimeError(f"{step}: code={data.get('code')} msg={data.get('msg')}")
+                def _check(data: dict, step: str) -> None:
+                    if data.get("code") != 0:
+                        logger.error("Bitable %s failed: %s", step, data)
+                        raise RuntimeError(f"{step}: code={data.get('code')} msg={data.get('msg')}")
 
-            # Step 1: Create bitable
-            resp = await self.http.post(base, headers=headers, json={"name": title})
-            data = resp.json()
-            _check(data, "create app")
-            app_token = data["data"]["app"]["app_token"]
-            url = data["data"]["app"]["url"]
+                # Step 1: Create bitable
+                resp = await self.http.post(base, headers=headers, json={"name": title})
+                data = resp.json()
+                if attempt == 0 and self.cards._is_token_error(data):
+                    logger.info("Create bitable: token expired, refreshing and retrying")
+                    self.cards._invalidate_token()
+                    continue
+                _check(data, "create app")
+                app_token = data["data"]["app"]["app_token"]
+                url = data["data"]["app"]["url"]
 
-            # Get default table
-            resp = await self.http.get(f"{base}/{app_token}/tables", headers=headers)
-            data = resp.json()
-            _check(data, "list tables")
-            items = data.get("data", {}).get("items", [])
-            if not items:
-                return {"status": "error", "message": "Bitable created but no default table found"}
-            table_id = items[0]["table_id"]
-            tbl = f"{base}/{app_token}/tables/{table_id}"
+                # Get default table
+                resp = await self.http.get(f"{base}/{app_token}/tables", headers=headers)
+                data = resp.json()
+                _check(data, "list tables")
+                items = data.get("data", {}).get("items", [])
+                if not items:
+                    return {"status": "error", "message": "Bitable created but no default table found"}
+                table_id = items[0]["table_id"]
+                tbl = f"{base}/{app_token}/tables/{table_id}"
 
-            # List default fields
-            resp = await self.http.get(f"{tbl}/fields", headers=headers)
-            data = resp.json()
-            _check(data, "list fields")
-            default_fields = data["data"]["items"]
+                # List default fields
+                resp = await self.http.get(f"{tbl}/fields", headers=headers)
+                data = resp.json()
+                _check(data, "list fields")
+                default_fields = data["data"]["items"]
 
-            # Delete non-primary default fields
-            for f in default_fields[1:]:
-                resp = await self.http.delete(f"{tbl}/fields/{f['field_id']}", headers=headers)
-                d = resp.json()
-                if d.get("code") != 0:
-                    logger.warning("Delete default field %s: %s", f["field_id"], d)
-
-            # Delete default empty records (Feishu creates 10 placeholder rows)
-            resp = await self.http.get(f"{tbl}/records", headers=headers, params={"page_size": 20})
-            d = resp.json()
-            if d.get("code") == 0:
-                default_recs = [r["record_id"] for r in d.get("data", {}).get("items", [])]
-                if default_recs:
-                    await self.http.post(
-                        f"{tbl}/records/batch_delete", headers=headers,
-                        json={"records": default_recs},
-                    )
-
-            # Step 2: Add custom fields
-            field_names = []  # track successfully created field names
-            if fields:
-                # Rename/retype first default field → first custom field
-                first_field = fields[0]
-                ft = field_type_map.get(first_field.get("type", "text"), 1)
-                update_json: dict = {"field_name": first_field["name"], "type": ft}
-                if first_field.get("options"):
-                    update_json["property"] = {"options": [{"name": o} for o in first_field["options"]]}
-                resp = await self.http.put(
-                    f"{tbl}/fields/{default_fields[0]['field_id']}", headers=headers, json=update_json,
-                )
-                d = resp.json()
-                if d.get("code") != 0:
-                    logger.error("Update first field failed: %s", d)
-                else:
-                    field_names.append(first_field["name"])
-
-                # Add remaining fields
-                for f in fields[1:]:
-                    ft = field_type_map.get(f.get("type", "text"), 1)
-                    field_json: dict = {"field_name": f["name"], "type": ft}
-                    if f.get("options"):
-                        field_json["property"] = {"options": [{"name": o} for o in f["options"]]}
-                    resp = await self.http.post(f"{tbl}/fields", headers=headers, json=field_json)
+                # Delete non-primary default fields
+                for f in default_fields[1:]:
+                    resp = await self.http.delete(f"{tbl}/fields/{f['field_id']}", headers=headers)
                     d = resp.json()
                     if d.get("code") != 0:
-                        logger.error("Create field '%s' failed: %s", f["name"], d)
+                        logger.warning("Delete default field %s: %s", f["field_id"], d)
+
+                # Delete default empty records (Feishu creates 10 placeholder rows)
+                resp = await self.http.get(f"{tbl}/records", headers=headers, params={"page_size": 20})
+                d = resp.json()
+                if d.get("code") == 0:
+                    default_recs = [r["record_id"] for r in d.get("data", {}).get("items", [])]
+                    if default_recs:
+                        await self.http.post(
+                            f"{tbl}/records/batch_delete", headers=headers,
+                            json={"records": default_recs},
+                        )
+
+                # Step 2: Add custom fields
+                field_names = []  # track successfully created field names
+                if fields:
+                    # Rename/retype first default field → first custom field
+                    first_field = fields[0]
+                    ft = field_type_map.get(first_field.get("type", "text"), 1)
+                    update_json: dict = {"field_name": first_field["name"], "type": ft}
+                    if first_field.get("options"):
+                        update_json["property"] = {"options": [{"name": o} for o in first_field["options"]]}
+                    resp = await self.http.put(
+                        f"{tbl}/fields/{default_fields[0]['field_id']}", headers=headers, json=update_json,
+                    )
+                    d = resp.json()
+                    if d.get("code") != 0:
+                        logger.error("Update first field failed: %s", d)
                     else:
-                        field_names.append(f["name"])
+                        field_names.append(first_field["name"])
 
-            # Build field name → type lookup for value coercion
-            field_type_lookup = {}
-            if fields:
-                for f in fields:
-                    field_type_lookup[f["name"]] = f.get("type", "text")
+                    # Add remaining fields
+                    for f in fields[1:]:
+                        ft = field_type_map.get(f.get("type", "text"), 1)
+                        field_json: dict = {"field_name": f["name"], "type": ft}
+                        if f.get("options"):
+                            field_json["property"] = {"options": [{"name": o} for o in f["options"]]}
+                        resp = await self.http.post(f"{tbl}/fields", headers=headers, json=field_json)
+                        d = resp.json()
+                        if d.get("code") != 0:
+                            logger.error("Create field '%s' failed: %s", f["name"], d)
+                        else:
+                            field_names.append(f["name"])
 
-            # Step 3: Add records — filter to only successfully created fields
-            record_errors = 0
-            first_error = None
-            if records and field_names:
-                for r in records:
-                    # Only include fields that actually exist in the table
-                    filtered = {k: v for k, v in r.items() if k in field_names} if field_names else r
-                    if not filtered:
-                        continue
-                    # Coerce values to API-expected formats
-                    for k, v in list(filtered.items()):
-                        ft = field_type_lookup.get(k, "text")
-                        if ft == "url" and isinstance(v, str):
-                            filtered[k] = {"text": v, "link": v} if v else None
-                    resp = await self.http.post(f"{tbl}/records", headers=headers, json={"fields": filtered})
-                    d = resp.json()
-                    if d.get("code") != 0:
-                        record_errors += 1
-                        if first_error is None:
-                            first_error = {"api_code": d.get("code"), "msg": d.get("msg"), "sample_data": filtered}
-                        if record_errors <= 3:
-                            logger.error("Create record failed: %s (data=%s)", d, filtered)
+                # Build field name → type lookup for value coercion
+                field_type_lookup = {}
+                if fields:
+                    for f in fields:
+                        field_type_lookup[f["name"]] = f.get("type", "text")
 
-            # Step 4: Add views
-            if views:
-                view_type_map = {"kanban": "kanban", "gallery": "gallery", "gantt": "gantt", "form": "form", "grid": "grid"}
-                for v in views:
-                    vt = view_type_map.get(v.get("type", "grid"), "grid")
-                    resp = await self.http.post(
-                        f"{tbl}/views", headers=headers,
-                        json={"view_name": v.get("name", vt), "view_type": vt},
+                # Step 3: Add records — filter to only successfully created fields
+                record_errors = 0
+                first_error = None
+                if records and field_names:
+                    for r in records:
+                        # Only include fields that actually exist in the table
+                        filtered = {k: v for k, v in r.items() if k in field_names} if field_names else r
+                        if not filtered:
+                            continue
+                        # Coerce values to API-expected formats
+                        for k, v in list(filtered.items()):
+                            ft = field_type_lookup.get(k, "text")
+                            if ft == "url" and isinstance(v, str):
+                                filtered[k] = {"text": v, "link": v} if v else None
+                        resp = await self.http.post(f"{tbl}/records", headers=headers, json={"fields": filtered})
+                        d = resp.json()
+                        if d.get("code") != 0:
+                            record_errors += 1
+                            if first_error is None:
+                                first_error = {"api_code": d.get("code"), "msg": d.get("msg"), "sample_data": filtered}
+                            if record_errors <= 3:
+                                logger.error("Create record failed: %s (data=%s)", d, filtered)
+
+                # Step 4: Add views
+                if views:
+                    view_type_map = {"kanban": "kanban", "gallery": "gallery", "gantt": "gantt", "form": "form", "grid": "grid"}
+                    for v in views:
+                        vt = view_type_map.get(v.get("type", "grid"), "grid")
+                        resp = await self.http.post(
+                            f"{tbl}/views", headers=headers,
+                            json={"view_name": v.get("name", vt), "view_type": vt},
+                        )
+                        d = resp.json()
+                        if d.get("code") != 0:
+                            logger.warning("Create view failed: %s", d)
+
+                # Step 5: Send plain link to chat
+                if chat_id:
+                    await self.http.post(
+                        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                        headers=headers,
+                        json={
+                            "receive_id": chat_id,
+                            "msg_type": "text",
+                            "content": json.dumps({"text": url}),
+                        },
                     )
-                    d = resp.json()
-                    if d.get("code") != 0:
-                        logger.warning("Create view failed: %s", d)
 
-            # Step 5: Send plain link to chat
-            if chat_id:
-                await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                    headers=headers,
-                    json={
-                        "receive_id": chat_id,
-                        "msg_type": "text",
-                        "content": json.dumps({"text": url}),
-                    },
-                )
-
-            result: dict = {"status": "ok", "app_token": app_token, "table_id": table_id, "url": url,
-                            "fields_created": len(field_names), "fields_requested": len(fields or [])}
-            if record_errors:
-                result["record_errors"] = record_errors
-                result["first_error"] = first_error
-            return result
-        except Exception as e:
-            logger.error("Create bitable failed: %s", e)
-            return {"status": "error", "message": f"Create bitable failed: {e}"}
+                result: dict = {"status": "ok", "app_token": app_token, "table_id": table_id, "url": url,
+                                "fields_created": len(field_names), "fields_requested": len(fields or [])}
+                if record_errors:
+                    result["record_errors"] = record_errors
+                    result["first_error"] = first_error
+                return result
+            except Exception as e:
+                logger.error("Create bitable failed: %s", e)
+                return {"status": "error", "message": f"Create bitable failed: {e}"}
+        return {"status": "error", "message": "Create bitable failed after retry"}
 
     # ── Post (rich text) inbound processing ─────────────────────
 
@@ -1481,39 +1577,44 @@ class FeishuChannel:
 
     async def _download_media(self, content_json: str, message_type: str, message_id: str = "") -> str:
         """Download media and return a description with the local file path."""
-        try:
-            data = json.loads(content_json)
-            token = await self.cards._get_token()
-            temp_dir = self.settings.temp_dir
-            # Use message_id from parameter (meta), fallback to content JSON
-            msg_id = message_id or data.get("message_id", "")
+        for attempt in range(2):
+            try:
+                data = json.loads(content_json)
+                token = await self.cards._get_token()
+                temp_dir = self.settings.temp_dir
+                # Use message_id from parameter (meta), fallback to content JSON
+                msg_id = message_id or data.get("message_id", "")
 
-            if message_type == "image":
-                path = await download_image(
-                    self.http, token, msg_id, data["image_key"], temp_dir
-                )
-                return f"[Image downloaded to {path}]"
-            elif message_type == "audio":
-                path = await download_audio(
-                    self.http, token, msg_id, data["file_key"], temp_dir
-                )
-                return f"[Audio file downloaded to {path}]"
-            elif message_type == "media":
-                file_name = data.get("file_name", "video.mp4")
-                path = await download_file(
-                    self.http, token, msg_id, data["file_key"],
-                    file_name, temp_dir
-                )
-                return f"[Video downloaded to {path}]"
-            elif message_type == "file":
-                path = await download_file(
-                    self.http, token, msg_id, data["file_key"],
-                    data.get("file_name", ""), temp_dir
-                )
-                return f"[File downloaded to {path}]"
-        except Exception as e:
-            logger.error("Media download failed: %s", e)
-            return f"[Media download failed: {e}]"
+                if message_type == "image":
+                    path = await download_image(
+                        self.http, token, msg_id, data["image_key"], temp_dir
+                    )
+                    return f"[Image downloaded to {path}]"
+                elif message_type == "audio":
+                    path = await download_audio(
+                        self.http, token, msg_id, data["file_key"], temp_dir
+                    )
+                    return f"[Audio file downloaded to {path}]"
+                elif message_type == "media":
+                    file_name = data.get("file_name", "video.mp4")
+                    path = await download_file(
+                        self.http, token, msg_id, data["file_key"],
+                        file_name, temp_dir
+                    )
+                    return f"[Video downloaded to {path}]"
+                elif message_type == "file":
+                    path = await download_file(
+                        self.http, token, msg_id, data["file_key"],
+                        data.get("file_name", ""), temp_dir
+                    )
+                    return f"[File downloaded to {path}]"
+            except Exception as e:
+                if attempt == 0:
+                    logger.info("Media download failed (attempt 1), refreshing token and retrying: %s", e)
+                    self.cards._invalidate_token()
+                    continue
+                logger.error("Media download failed: %s", e)
+                return f"[Media download failed: {e}]"
         return content_json
 
     # ── Scheduled task watcher ────────────────────────────────────
