@@ -220,7 +220,7 @@ TOOLS = [
     ),
     types.Tool(
         name="send_reaction",
-        description="Send an emoji reaction to a message in Feishu. Types: THUMBSUP, HEART, LAUGH, SURPRISED, CRY, OK, FIRE, CLAP, PARTY, MUSCLE, FINGERHEART",
+        description="Send an emoji reaction to a message in Feishu. 176 types available. Common ones: THUMBSUP, ThumbsDown, HEART, SMILE, LAUGH, LOL, CLAP, MUSCLE, FINGERHEART, OK, PARTY, Fire, YEAH, DONE, LGTM, HUG, KISS, ROSE, BEER, SKULL, POOP, BOMB, SOB, CRY, ANGRY, WOW, SHY, THINKING, FACEPALM. Case-sensitive (Fire not FIRE).",
         inputSchema={
             "type": "object",
             "properties": {
