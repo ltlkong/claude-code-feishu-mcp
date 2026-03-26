@@ -619,8 +619,12 @@ class FeishuChannel:
 
     _PROFILES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "profiles")
 
+    _PROFILE_MAX_CHARS = 500
+
     def _handle_update_profile(self, chat_id: str, user_id: str, profile: str) -> dict:
-        """Write/update a user profile markdown file."""
+        """Write/update a user profile markdown file. Rejects if too long."""
+        if len(profile) > self._PROFILE_MAX_CHARS:
+            return {"status": "error", "message": f"Profile size exceeded ({len(profile)}/{self._PROFILE_MAX_CHARS} chars). Need to summarize."}
         os.makedirs(self._PROFILES_DIR, exist_ok=True)
         filename = f"{chat_id}_{user_id}.md"
         filepath = os.path.join(self._PROFILES_DIR, filename)
