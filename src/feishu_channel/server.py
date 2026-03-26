@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.lowlevel import Server
@@ -304,8 +305,10 @@ class FeishuChannel:
         self.http = self.cards._http
         self._write_stream = None  # Captured from stdio_server for sending notifications
 
-        # User name cache: open_id -> display name
-        self._user_names: dict[str, str] = {}
+        # Track last reply time per chat+user ("chat_id:user_id" -> UTC ISO) for queued message detection
+        self._last_reply_times: dict[str, str] = {}
+        # Track which user we're currently responding to per chat (set on notification, read on reply)
+        self._current_user: dict[str, str] = {}  # chat_id -> user_id
 
         # Debounce: merge rapid messages from the same chat into one card
         # (debounce removed — deferred card creation handles rapid messages)
@@ -334,6 +337,8 @@ class FeishuChannel:
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             if name == "reply":
                 result = await channel._handle_send_text(arguments["chat_id"], arguments["text"])
+                if result.get("status") == "ok":
+                    channel._mark_reply(arguments["chat_id"])
             elif name == "reply_card":
                 if arguments.get("done", False):
                     result = await cards.finalize_card(arguments["request_id"], arguments["text"])
@@ -341,6 +346,14 @@ class FeishuChannel:
                     result = await cards.update_card(
                         arguments["request_id"], arguments.get("status", ""), arguments["text"],
                         emoji=arguments.get("emoji", "⏳"), template=arguments.get("template", "indigo"))
+                if result.get("status") == "ok":
+                    # Resolve chat_id from card state or origins
+                    rid = arguments["request_id"]
+                    card_state = cards._cards.get(rid)
+                    origin = cards._origins.get(rid)
+                    cid = card_state.chat_id if card_state else (origin[0] if origin else "")
+                    if cid:
+                        channel._mark_reply(cid)
             elif name == "reply_file":
                 result = await cards.upload_and_send_file(arguments["chat_id"], arguments["file_path"])
             elif name == "reply_image":
@@ -399,6 +412,14 @@ class FeishuChannel:
                 result = {"status": "error", "message": f"Unknown tool: {name}"}
             return [types.TextContent(type="text", text=json.dumps(result))]
 
+    def _mark_reply(self, chat_id: str) -> None:
+        """Record the last reply time for a chat+user (for queued message detection)."""
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        user_id = self._current_user.get(chat_id, "")
+        if user_id:
+            self._last_reply_times[f"{chat_id}:{user_id}"] = now
+        self._last_reply_times[chat_id] = now  # also track per-chat as fallback
+
     # ── Notification sending ─────────────────────────────────────
     # We capture the write_stream from stdio_server() and send raw
     # JSON-RPC notifications directly. This avoids needing a session
@@ -422,38 +443,13 @@ class FeishuChannel:
 
     # ── Feishu event callbacks ───────────────────────────────────
 
-    async def _resolve_user_name(self, user_id: str, chat_id: str) -> str:
-        """Resolve a user's display name, with caching. Falls back to user_id."""
-        if user_id in self._user_names:
-            return self._user_names[user_id]
-        try:
-            token = await self.cards._get_token()
-            # Try chat members API (works for external users too)
-            resp = await self.http.get(
-                f"https://open.feishu.cn/open-apis/im/v1/chats/{chat_id}/members?member_id_type=open_id",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            data = resp.json()
-            if data.get("code") == 0:
-                for m in data["data"].get("items", []):
-                    mid = m.get("member_id", "")
-                    name = m.get("name", "")
-                    if mid and name:
-                        self._user_names[mid] = name
-        except Exception as e:
-            logger.debug("Failed to resolve user names: %s", e)
-        return self._user_names.get(user_id, user_id)
-
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
         """Called when a Feishu message arrives. Sends notification directly to Claude."""
         mark_activity()
         chat_id = meta["chat_id"]
         message_id = meta.get("message_id", "")
 
-        # Resolve sender name
         user_id = meta.get("user_id", "")
-        if user_id:
-            meta["sender_name"] = await self._resolve_user_name(user_id, chat_id)
 
         # Fetch replied-to message content if this is a reply
         parent_id = meta.get("parent_id", "")
@@ -519,10 +515,22 @@ class FeishuChannel:
         # Defer card creation — card appears only when Claude calls reply_card
         self.cards.register_pending(request_id, chat_id, message_id)
 
-        # Inject user profile into meta
+        # Track current user for reply attribution
+        if user_id:
+            self._current_user[chat_id] = user_id
+
+        # Inject last reply time for this chat+user (queued message detection)
+        last_reply_user = self._last_reply_times.get(f"{chat_id}:{user_id}", "") if user_id else ""
+        last_reply_chat = self._last_reply_times.get(chat_id, "")
+        last_reply = last_reply_user or last_reply_chat
+        if last_reply:
+            meta["last_reply_at"] = last_reply
+
+        # Inject user profile into meta (only when non-empty)
         if user_id:
             profile = self._load_profile(chat_id, user_id)
-            meta["user_profile"] = profile  # always inject, even if empty
+            if profile:
+                meta["user_profile"] = profile
 
         # Send notification to Claude
         await self._send_channel_notification(content, meta)

@@ -211,14 +211,16 @@ class FeishuListener:
             "user_id": sender_id,
             "chat_id": msg.message.chat_id,
             "chat_type": msg.message.chat_type or "p2p",  # "p2p" or "group"
-            "sender_name": getattr(msg.sender, "sender_id", None) and msg.sender.sender_id.open_id or "unknown",
             "message_type": message_type,
             "message_time": message_time,
             "request_id": request_id,
             "message_id": msg.message.message_id,
-            "root_id": msg.message.root_id or "",  # thread root message id (for replies)
-            "parent_id": msg.message.parent_id or "",  # direct parent message id (for replies)
         }
+        # Only inject reply chain IDs when present
+        if msg.message.root_id:
+            meta["root_id"] = msg.message.root_id
+        if msg.message.parent_id:
+            meta["parent_id"] = msg.message.parent_id
 
         # Track active chats and last message time for recovery
         if hasattr(self, "_active_chats"):
@@ -290,14 +292,11 @@ class FeishuListener:
             "user_id": user_id,
             "chat_id": "",  # reaction events don't include chat_id directly
             "chat_type": "unknown",
-            "sender_name": user_id,
             "message_type": "reaction",
             "message_time": message_time,
             "request_id": request_id,
             "message_id": message_id,
             "emoji_type": emoji_type,
-            "root_id": "",
-            "parent_id": "",
         }
 
         if hasattr(self, "_loop") and self._loop:
@@ -323,13 +322,10 @@ class FeishuListener:
             "user_id": "",
             "chat_id": chat_id,
             "chat_type": "unknown",
-            "sender_name": "",
             "message_type": "recall",
             "message_time": message_time,
             "request_id": request_id,
             "message_id": message_id,
-            "root_id": "",
-            "parent_id": "",
         }
 
         if hasattr(self, "_loop") and self._loop:
@@ -468,7 +464,6 @@ class FeishuListener:
                     "user_id": sender_id,
                     "chat_id": chat_id,
                     "chat_type": msg.get("chat_type", "p2p"),
-                    "sender_name": sender_id,
                     "message_type": msg_type,
                     "message_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                     "request_id": request_id,
