@@ -37,12 +37,12 @@ else:
 TOOLS = [
     types.Tool(
         name="update_status",
-        description="Update the Feishu card with your current status and description. Call this to show the user what you're doing. Auto-creates card if needed.",
+        description="Show progress to the user while working on a multi-step task. Auto-creates a Feishu card on first call. Call repeatedly to update status as you move through steps. For quick replies, skip this and call reply() directly.",
         inputSchema={
             "type": "object",
             "properties": {
                 "request_id": {"type": "string", "description": "The request_id from the inbound message"},
-                "status": {"type": "string", "description": "Short status shown in card header, e.g. 'Thinking...', 'Searching...', 'Writing code...'"},
+                "status": {"type": "string", "description": "Short status in card header (keep under 15 chars), e.g. '搜索中...', '生成报告...'"},
                 "text": {"type": "string", "description": "Description of what you're currently doing"},
                 "emoji": {"type": "string", "description": "Emoji for the header, e.g. '🔍', '💻', '🎨', '⏳'. Choose based on what you're doing.", "default": "⏳"},
                 "template": {"type": "string", "description": "Header color theme: blue, wathet, turquoise, green, yellow, orange, red, carmine, violet, purple, indigo, grey, default", "default": "indigo"},
@@ -52,7 +52,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply",
-        description="Send final response and finalize the card. Call this when done.",
+        description="Send final response text and seal the card. ONE-SHOT: can only be called ONCE per request_id. This is the ONLY way the user sees your text response — plain text output is invisible to them. For simple replies, call this directly without update_status. Always end your response flow with this.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -64,7 +64,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply_file",
-        description="Upload and send a file to a Feishu chat.",
+        description="Send a file to a Feishu chat (any format: PDF, Excel, ZIP, etc.). The file appears as a downloadable attachment. Use for generated files the user requested. File must exist at an absolute path on the local machine.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -76,7 +76,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply_image",
-        description="Send an image to a Feishu chat. The image is displayed inline (not as a file download). Use this for generated images, screenshots, etc.",
+        description="Send an image inline in a Feishu chat (displays directly, not as download). Use for: photos from search_image, generated charts/diagrams, screenshots. Supports PNG, JPG, GIF. Pair with search_image to find and send contextual images.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -88,7 +88,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply_video",
-        description="Send a video to a Feishu chat. The video is displayed inline with a player (not as a file download). Auto-generates thumbnail from first frame.",
+        description="Send a video inline in a Feishu chat with a built-in player. Auto-generates thumbnail from first frame. Supports MP4, MOV.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -100,7 +100,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply_post",
-        description="Send a rich text (post) message to Feishu with mixed text, images, videos, and links in one message. Images and videos can use local file paths (auto-uploaded).",
+        description="Send a rich text message mixing text, images, videos, and links in a single bubble. Use when you need formatted content with inline media — e.g. a summary with embedded screenshots, a step-by-step guide with images. Local file paths for images/videos are auto-uploaded.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -120,7 +120,7 @@ TOOLS = [
     ),
     types.Tool(
         name="reply_audio",
-        description="Convert text to speech and send as a voice message to Feishu.",
+        description="Convert text to a voice message and send to Feishu (via ElevenLabs TTS). Use for playful voice replies or when a voice response feels more natural. Requires ElevenLabs API key to be configured.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -132,7 +132,7 @@ TOOLS = [
     ),
     types.Tool(
         name="create_reminder",
-        description="Create a scheduled reminder via cron. Two modes: simple (send fixed message) or smart (trigger Claude to think and decide response). Use standard cron expressions (minute hour day month weekday). Examples: '0 9 * * *' = daily 9am, '30 14 * * 1-5' = weekdays 2:30pm. Minimum interval: 1 minute.",
+        description="Schedule a recurring message or smart prompt on a cron schedule. Two modes: smart=false sends a fixed message; smart=true triggers Claude to think and compose a fresh response each time. Cron is in LOCAL timezone (auto-converted from UTC). Examples: '0 9 * * *' = daily 9am, '30 14 * * 1-5' = weekdays 2:30pm, '0 */2 * * *' = every 2 hours. Use max_runs to auto-delete after N executions (e.g. max_runs=1 for a one-shot delayed message).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -148,7 +148,7 @@ TOOLS = [
     ),
     types.Tool(
         name="list_reminders",
-        description="List all scheduled reminders.",
+        description="List all active scheduled reminders with their cron expressions, targets, and run counts.",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -167,7 +167,7 @@ TOOLS = [
     ),
     types.Tool(
         name="create_doc",
-        description="Create a Feishu cloud document with title and content blocks. Returns the document URL. Content blocks: heading1/heading2/heading3, text, bullet, ordered, code, quote.",
+        description="Create a Feishu Doc (云文档) for long-form content — reports, guides, meeting notes, specs. Returns a shareable URL. Use instead of reply() when content exceeds a few paragraphs or needs persistent structure. Block types: heading1/heading2/heading3, text, bullet, ordered, code (with language), quote.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -180,13 +180,13 @@ TOOLS = [
     ),
     types.Tool(
         name="create_bitable",
-        description="Create a Feishu Bitable (多维表格) with custom fields, data, and views. Field types: text, number, single_select, multi_select, date, checkbox, created_time, updated_time. View types: grid, kanban, gallery, gantt, form. NOTE: kanban views require manual group field config in Feishu UI (API limitation). Sends plain link to chat for Feishu preview card.",
+        description="Create a Feishu Bitable (多维表格) — a structured database with custom fields, records, and views. Use for: task trackers, comparison tables, inventories, trip planners, any data that benefits from sorting/filtering. Auto-cleans default empty rows. Field types: text, number, single_select, multi_select, date (ms timestamp), checkbox, url, phone, user, attachment, created_time, modified_time. URL values are auto-converted to Feishu's {text,link} format. View types: grid (default), kanban (requires manual group field in UI), gallery, gantt, form.",
         inputSchema={
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Bitable title"},
-                "fields": {"type": "array", "description": "Field definitions: {\"name\":\"字段名\",\"type\":\"text|number|single_select|multi_select|date|checkbox|created_time|updated_time\",\"options\":[\"选项1\",\"选项2\"]}", "items": {"type": "object"}},
-                "records": {"type": "array", "description": "Array of records. Each record maps field names to values. Single select: string, multi select: [strings], date: millisecond timestamp, checkbox: boolean.", "items": {"type": "object"}},
+                "fields": {"type": "array", "description": "Field definitions: {\"name\":\"字段名\",\"type\":\"text|number|single_select|multi_select|date|checkbox|url|phone|user|attachment|created_time|modified_time\",\"options\":[\"选项1\",\"选项2\"]}", "items": {"type": "object"}},
+                "records": {"type": "array", "description": "Array of records. Each record maps field names to values. Text: string, number: numeric, single_select: string, multi_select: [strings], date: millisecond timestamp, checkbox: boolean, url: string, phone: string.", "items": {"type": "object"}},
                 "views": {"type": "array", "description": "Additional views to create: {\"name\":\"视图名\",\"type\":\"kanban|gallery|gantt|form\"}. Grid view is created by default.", "items": {"type": "object"}, "default": []},
                 "chat_id": {"type": "string", "description": "Optional: send bitable link to this chat after creation", "default": ""},
             },
@@ -195,7 +195,7 @@ TOOLS = [
     ),
     types.Tool(
         name="update_profile",
-        description="Update a user's profile for a specific chat context. Profiles are short markdown notes that help tailor responses per user per chat. Call this when you learn something new about a user. Keep profiles concise — they are injected into every message.",
+        description="Save or update a user's profile for a specific chat. Profiles are injected into every inbound message as user_profile, so keep them SHORT and actionable. Update when you learn: their name, role, personality, preferences, communication style, or relationship to others. Profiles are per-chat — same person can have different profiles in different groups.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -208,7 +208,7 @@ TOOLS = [
     ),
     types.Tool(
         name="read_messages",
-        description="Read recent messages from a Feishu chat. Returns message history with sender, content, and timestamps. Use for understanding context, summarizing discussions, or finding specific info.",
+        description="Fetch recent message history from a Feishu chat. Returns sender name, content, and timestamps. Use proactively to: catch up on context you missed, summarize a discussion, find a specific message someone referenced, or understand what happened before you joined a conversation.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -220,7 +220,7 @@ TOOLS = [
     ),
     types.Tool(
         name="send_reaction",
-        description="Send an emoji reaction to a message in Feishu. 176 types available, case-sensitive. Common: THUMBSUP, ThumbsDown, HEART, SMILE, LAUGH, LOL, CLAP, MUSCLE, FINGERHEART, OK, PARTY, Fire, YEAH, DONE, LGTM, HUG, KISS, ROSE, BEER, SKULL, POOP, SOB, CRY, ANGRY, WOW, SHY, THINKING, FACEPALM. Full list: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce",
+        description="React to a message with an emoji — like a real person would. Use instead of typing 'ok' or 'got it'. Use proactively: THUMBSUP for acknowledgment, LAUGH/LOL for funny messages, HEART for wholesome moments, Fire for impressive stuff, CLAP for achievements, THINKING when pondering, FACEPALM for facepalm moments. 176 types, case-sensitive. More: MUSCLE, FINGERHEART, OK, PARTY, YEAH, DONE, LGTM, HUG, KISS, ROSE, BEER, SKULL, SOB, CRY, ANGRY, WOW, SHY, POOP. Full list: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce",
         inputSchema={
             "type": "object",
             "properties": {
@@ -232,7 +232,7 @@ TOOLS = [
     ),
     types.Tool(
         name="bitable_records",
-        description="CRUD operations on Feishu Bitable (多维表格) records. Actions: list (read records with optional filter), create (add records), update (modify records), delete (remove records).",
+        description="Read and write records in an existing Feishu Bitable. Use this to interact with bitables that already exist (created by create_bitable or found via search_docs). Actions: list (query with optional filter), create (add new rows), update (modify existing rows by record_id), delete (remove rows by record_id). Get app_token from the bitable URL: feishu.cn/base/{app_token}.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -248,7 +248,7 @@ TOOLS = [
     ),
     types.Tool(
         name="manage_task",
-        description="Manage Feishu Tasks (飞书任务) via v1 API. Actions: create (new task), list (bot-created tasks), update (modify task), complete (mark done). Note: list only shows tasks created by the bot, not all user tasks.",
+        description="Create and manage Feishu Tasks (飞书任务). Use when someone mentions a to-do, action item, or deadline. Actions: create (new task with optional due date), list (shows bot-created tasks only), update (change title/description/due), complete (mark done). Tasks appear in Feishu's task center. Note: v1 API — list only returns tasks created by the bot.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -264,7 +264,7 @@ TOOLS = [
     ),
     types.Tool(
         name="search_image",
-        description="Search for images or GIFs to send in chat. Use 'photo' for high-quality photos (landscapes, food, business, etc.), 'gif' for animated GIFs/stickers/memes. Returns image URLs ready for download and reply_image.",
+        description="Search for photos or GIFs to send in chat — makes conversations more lively and visual. Photos (Pexels): landscapes, food, travel, business, scenery. GIFs (Tenor): reactions, memes, stickers, emotions. Returns local_path ready for reply_image. Use proactively: travel topics → scenery photos, food discussions → food photos, funny moments → reaction GIFs, celebrations → party GIFs. English queries work best.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -277,7 +277,7 @@ TOOLS = [
     ),
     types.Tool(
         name="search_docs",
-        description="Search all Feishu cloud documents (云文档) by keyword. Covers docs, sheets, bitables — everything in your cloud drive. Does NOT search wiki knowledge bases (requires user OAuth). Returns titles, URLs, and document types.",
+        description="Search all Feishu cloud documents (Docs, Sheets, Bitables, Slides) by keyword. Use before saying 'I don't know' — the answer might be in a company doc. Returns titles, URLs, and doc types. Does NOT cover wiki/knowledge bases (requires user OAuth).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1215,94 +1215,136 @@ class FeishuChannel:
             token = await self.cards._get_token()
             field_type_map = {
                 "text": 1, "number": 2, "single_select": 3, "multi_select": 4,
-                "date": 5, "checkbox": 7, "created_time": 1002, "updated_time": 1003,
+                "date": 5, "checkbox": 7, "user": 11, "phone": 13, "url": 15,
+                "attachment": 17, "created_time": 1001, "modified_time": 1002,
             }
+            base = "https://open.feishu.cn/open-apis/bitable/v1/apps"
+            headers = {"Authorization": f"Bearer {token}"}
+
+            def _check(data: dict, step: str) -> None:
+                if data.get("code") != 0:
+                    logger.error("Bitable %s failed: %s", step, data)
+                    raise RuntimeError(f"{step}: code={data.get('code')} msg={data.get('msg')}")
 
             # Step 1: Create bitable
-            resp = await self.http.post(
-                "https://open.feishu.cn/open-apis/bitable/v1/apps",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"name": title},
-            )
+            resp = await self.http.post(base, headers=headers, json={"name": title})
             data = resp.json()
-            if data.get("code") != 0:
-                return {"status": "error", "message": f"Bitable creation failed: {data}"}
+            _check(data, "create app")
             app_token = data["data"]["app"]["app_token"]
             url = data["data"]["app"]["url"]
 
             # Get default table
-            resp = await self.http.get(
-                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            items = resp.json().get("data", {}).get("items", [])
+            resp = await self.http.get(f"{base}/{app_token}/tables", headers=headers)
+            data = resp.json()
+            _check(data, "list tables")
+            items = data.get("data", {}).get("items", [])
             if not items:
                 return {"status": "error", "message": "Bitable created but no default table found"}
             table_id = items[0]["table_id"]
+            tbl = f"{base}/{app_token}/tables/{table_id}"
 
-            # Delete default fields (except the first one which we'll repurpose)
-            resp = await self.http.get(
-                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            default_fields = resp.json()["data"]["items"]
+            # List default fields
+            resp = await self.http.get(f"{tbl}/fields", headers=headers)
+            data = resp.json()
+            _check(data, "list fields")
+            default_fields = data["data"]["items"]
+
+            # Delete non-primary default fields
             for f in default_fields[1:]:
-                await self.http.delete(
-                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{f['field_id']}",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+                resp = await self.http.delete(f"{tbl}/fields/{f['field_id']}", headers=headers)
+                d = resp.json()
+                if d.get("code") != 0:
+                    logger.warning("Delete default field %s: %s", f["field_id"], d)
+
+            # Delete default empty records (Feishu creates 10 placeholder rows)
+            resp = await self.http.get(f"{tbl}/records", headers=headers, params={"page_size": 20})
+            d = resp.json()
+            if d.get("code") == 0:
+                default_recs = [r["record_id"] for r in d.get("data", {}).get("items", [])]
+                if default_recs:
+                    await self.http.post(
+                        f"{tbl}/records/batch_delete", headers=headers,
+                        json={"records": default_recs},
+                    )
 
             # Step 2: Add custom fields
+            field_names = []  # track successfully created field names
             if fields:
-                # Rename first default field to the first custom field
+                # Rename/retype first default field → first custom field
                 first_field = fields[0]
                 ft = field_type_map.get(first_field.get("type", "text"), 1)
-                update_json = {"field_name": first_field["name"], "type": ft}
+                update_json: dict = {"field_name": first_field["name"], "type": ft}
                 if first_field.get("options"):
                     update_json["property"] = {"options": [{"name": o} for o in first_field["options"]]}
-                await self.http.put(
-                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{default_fields[0]['field_id']}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json=update_json,
+                resp = await self.http.put(
+                    f"{tbl}/fields/{default_fields[0]['field_id']}", headers=headers, json=update_json,
                 )
+                d = resp.json()
+                if d.get("code") != 0:
+                    logger.error("Update first field failed: %s", d)
+                else:
+                    field_names.append(first_field["name"])
 
                 # Add remaining fields
                 for f in fields[1:]:
                     ft = field_type_map.get(f.get("type", "text"), 1)
-                    field_json = {"field_name": f["name"], "type": ft}
+                    field_json: dict = {"field_name": f["name"], "type": ft}
                     if f.get("options"):
                         field_json["property"] = {"options": [{"name": o} for o in f["options"]]}
-                    await self.http.post(
-                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
-                        headers={"Authorization": f"Bearer {token}"},
-                        json=field_json,
-                    )
+                    resp = await self.http.post(f"{tbl}/fields", headers=headers, json=field_json)
+                    d = resp.json()
+                    if d.get("code") != 0:
+                        logger.error("Create field '%s' failed: %s", f["name"], d)
+                    else:
+                        field_names.append(f["name"])
 
-            # Step 3: Add records (one by one — batch_create has data loss issues)
-            if records:
+            # Build field name → type lookup for value coercion
+            field_type_lookup = {}
+            if fields:
+                for f in fields:
+                    field_type_lookup[f["name"]] = f.get("type", "text")
+
+            # Step 3: Add records — filter to only successfully created fields
+            record_errors = 0
+            first_error = None
+            if records and field_names:
                 for r in records:
-                    await self.http.post(
-                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
-                        headers={"Authorization": f"Bearer {token}"},
-                        json={"fields": r},
-                    )
+                    # Only include fields that actually exist in the table
+                    filtered = {k: v for k, v in r.items() if k in field_names} if field_names else r
+                    if not filtered:
+                        continue
+                    # Coerce values to API-expected formats
+                    for k, v in list(filtered.items()):
+                        ft = field_type_lookup.get(k, "text")
+                        if ft == "url" and isinstance(v, str):
+                            filtered[k] = {"text": v, "link": v} if v else None
+                    resp = await self.http.post(f"{tbl}/records", headers=headers, json={"fields": filtered})
+                    d = resp.json()
+                    if d.get("code") != 0:
+                        record_errors += 1
+                        if first_error is None:
+                            first_error = {"api_code": d.get("code"), "msg": d.get("msg"), "sample_data": filtered}
+                        if record_errors <= 3:
+                            logger.error("Create record failed: %s (data=%s)", d, filtered)
 
-            # Step 4: Add views (kanban group field must be set manually in Feishu UI)
+            # Step 4: Add views
             if views:
                 view_type_map = {"kanban": "kanban", "gallery": "gallery", "gantt": "gantt", "form": "form", "grid": "grid"}
                 for v in views:
                     vt = view_type_map.get(v.get("type", "grid"), "grid")
-                    await self.http.post(
-                        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/views",
-                        headers={"Authorization": f"Bearer {token}"},
+                    resp = await self.http.post(
+                        f"{tbl}/views", headers=headers,
                         json={"view_name": v.get("name", vt), "view_type": vt},
                     )
+                    d = resp.json()
+                    if d.get("code") != 0:
+                        logger.warning("Create view failed: %s", d)
 
             # Step 5: Send plain link to chat
             if chat_id:
                 await self.http.post(
                     "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers=headers,
                     json={
                         "receive_id": chat_id,
                         "msg_type": "text",
@@ -1310,7 +1352,12 @@ class FeishuChannel:
                     },
                 )
 
-            return {"status": "ok", "app_token": app_token, "url": url}
+            result: dict = {"status": "ok", "app_token": app_token, "table_id": table_id, "url": url,
+                            "fields_created": len(field_names), "fields_requested": len(fields or [])}
+            if record_errors:
+                result["record_errors"] = record_errors
+                result["first_error"] = first_error
+            return result
         except Exception as e:
             logger.error("Create bitable failed: %s", e)
             return {"status": "error", "message": f"Create bitable failed: {e}"}
