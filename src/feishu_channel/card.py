@@ -468,8 +468,10 @@ class CardManager:
 
         del self._cards[request_id]
         self._pending.pop(request_id, None)
+        # Keep _origins — if reply/update_status is called again on this request_id,
+        # _ensure_card will auto-create a fresh card from _origins.
+        # _origins is swept by cleanup_stale_cards when it exceeds 1000 entries.
         if replaced:
-            self._origins.pop(request_id, None)  # Only clear on success — keep for retry on failure
             return {"status": "ok"}
         return {"status": "error", "message": "Failed to send final response"}
 
