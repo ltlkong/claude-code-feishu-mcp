@@ -140,7 +140,18 @@ def parse_message_content(msg) -> tuple[str, str]:
         return msg_type, content_str or ""
 
     if msg_type == "text":
-        return "text", content.get("text", "")
+        text = content.get("text", "")
+        # Resolve @mention placeholders (@_user_1, @_user_2, ...) using msg.message.mentions
+        mentions = getattr(msg.message, "mentions", None) or []
+        for m in mentions:
+            key = getattr(m, "key", None)  # e.g. "@_user_1"
+            name = getattr(m, "name", None) or ""
+            id_obj = getattr(m, "id", None)
+            open_id = getattr(id_obj, "open_id", "") if id_obj else ""
+            if key and name:
+                replacement = f"@{name}({open_id})" if open_id else f"@{name}"
+                text = text.replace(key, replacement)
+        return "text", text
     elif msg_type == "image":
         image_key = content.get("image_key", "")
         return "image", json.dumps({"image_key": image_key, "message_id": msg.message.message_id})
