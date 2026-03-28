@@ -38,12 +38,13 @@ else:
 TOOLS = [
     types.Tool(
         name="reply",
-        description="Send a text message to a Feishu chat. Can be called multiple times — each call sends a separate message bubble, like real texting. This is the ONLY way the user sees your response — plain text output is invisible to them. Use for casual chat, quick answers, or when you want to send multiple short messages naturally.",
+        description="Send a text message to a Feishu chat. Can be called multiple times — each call sends a separate message bubble, like real texting. This is the ONLY way the user sees your response — plain text output is invisible to them. Use for casual chat, quick answers, or when you want to send multiple short messages naturally. Supports markdown and @mentions: <at id=user_id></at> or <at id=all></at>.",
         inputSchema={
             "type": "object",
             "properties": {
                 "chat_id": {"type": "string", "description": "Feishu chat to send to"},
                 "text": {"type": "string", "description": "Message text"},
+                "reply_to": {"type": "string", "description": "Optional: message_id to reply to (creates a quoted reply). If not provided, sends as a new message."},
             },
             "required": ["chat_id", "text"],
         },
@@ -336,7 +337,7 @@ class FeishuChannel:
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             if name == "reply":
-                result = await channel._handle_send_text(arguments["chat_id"], arguments["text"])
+                result = await channel._handle_send_text(arguments["chat_id"], arguments["text"], reply_to=arguments.get("reply_to"))
                 if result.get("status") == "ok":
                     channel._mark_reply(arguments["chat_id"])
             elif name == "reply_card":
@@ -445,8 +446,8 @@ class FeishuChannel:
 
     async def _on_feishu_message(self, content: str, request_id: str, meta: dict) -> None:
         """Called when a Feishu message arrives. Sends notification directly to Claude."""
-        mark_activity()
         chat_id = meta["chat_id"]
+        mark_activity(chat_id)
         message_id = meta.get("message_id", "")
 
         user_id = meta.get("user_id", "")
@@ -526,11 +527,13 @@ class FeishuChannel:
         if last_reply:
             meta["last_reply_at"] = last_reply
 
-        # Inject user profile into meta (only when non-empty)
+        # Inject user profile into meta (always when user_id present)
         if user_id:
             profile = self._load_profile(chat_id, user_id)
             if profile:
                 meta["user_profile"] = profile
+            else:
+                meta["user_profile"] = "ERROR: PROFILE MISSING — CREATE ONE via update_profile() after observing this user"
 
         # Send notification to Claude
         await self._send_channel_notification(content, meta)
@@ -552,23 +555,48 @@ class FeishuChannel:
 
     # ── Text message (post with markdown) ────────────────────────────
 
-    async def _handle_send_text(self, chat_id: str, text: str) -> dict:
+    async def _handle_send_text(self, chat_id: str, text: str, reply_to: str = None) -> dict:
         """Send a text message via Feishu post format with markdown rendering.
         Supports: **bold**, *italic*, ~~strikethrough~~, [links](url), lists, quotes, code blocks.
-        Can be called multiple times — each call sends a separate message bubble."""
+        Use <at id=user_id></at> to @mention users (e.g. <at id=ou_xxx></at> or <at id=all></at>).
+        Can be called multiple times — each call sends a separate message bubble.
+        If reply_to is provided, sends as a quoted reply to that message."""
         for attempt in range(2):
             try:
                 token = await self.cards._get_token()
-                # Use the md tag in post format — renders markdown natively in Feishu
-                post_body = {"zh_cn": {"title": "", "content": [[{"tag": "md", "text": text}]]}}
-                resp = await self.http.post(
-                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={
+                # Parse <at id=xxx></at> tags and build mixed md+at content
+                import re
+                parts = re.split(r'<at id=([^>]+)></at>', text)
+                elements = []
+                for i, part in enumerate(parts):
+                    if i % 2 == 0:  # text segment
+                        if part:
+                            elements.append({"tag": "md", "text": part})
+                    else:  # user_id from <at> tag
+                        elements.append({"tag": "at", "user_id": part})
+                if not elements:
+                    elements = [{"tag": "md", "text": text}]
+                post_body = {"zh_cn": {"title": "", "content": [elements]}}
+
+                if reply_to:
+                    # Reply to a specific message (quoted reply)
+                    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{reply_to}/reply"
+                    body = {
+                        "msg_type": "post",
+                        "content": json.dumps(post_body),
+                    }
+                else:
+                    url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+                    body = {
                         "receive_id": chat_id,
                         "msg_type": "post",
                         "content": json.dumps(post_body),
-                    },
+                    }
+
+                resp = await self.http.post(
+                    url,
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=body,
                 )
                 data = resp.json()
                 if attempt == 0 and self.cards._is_token_error(data):
@@ -576,6 +604,10 @@ class FeishuChannel:
                     self.cards._invalidate_token()
                     continue
                 if data.get("code") != 0:
+                    # Auto-blacklist chat if bot is not in it
+                    if data.get("code") == 230002:
+                        from .heartbeat import blacklist_chat
+                        blacklist_chat(chat_id, "bot not in chat")
                     return {"status": "error", "message": f"Send text failed: {data}"}
                 return {"status": "ok"}
             except Exception as e:
@@ -1265,6 +1297,13 @@ class FeishuChannel:
 
     async def _handle_create_doc(self, title: str, content: list, chat_id: str = "") -> dict:
         """Create a Feishu cloud document with structured content."""
+        # Safety: if content arrives as JSON string, parse it
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = []
+        logger.info("create_doc: title=%s, content type=%s, len=%s", title, type(content).__name__, len(content) if isinstance(content, list) else 'N/A')
         for attempt in range(2):
             try:
                 token = await self.cards._get_token()
@@ -1300,11 +1339,17 @@ class FeishuChannel:
                         else:
                             children.append({"block_type": block_type, block_key: {"elements": [{"text_run": {"content": text}}]}})
 
-                    await self.http.post(
-                        f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                        headers={"Authorization": f"Bearer {token}"},
-                        json={"children": children, "index": 0},
-                    )
+                    # Feishu API limit: max 50 children per call, batch if needed
+                    for batch_start in range(0, len(children), 50):
+                        batch = children[batch_start:batch_start + 50]
+                        blocks_resp = await self.http.post(
+                            f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={"children": batch, "index": -1},
+                        )
+                        blocks_data = blocks_resp.json()
+                        if blocks_data.get("code") != 0:
+                            logger.error("Doc add blocks failed: %s", blocks_data)
 
                 # Step 3: Get the URL from the API response (or construct fallback)
                 try:
@@ -1732,6 +1777,7 @@ class FeishuChannel:
         asyncio.create_task(heartbeat_loop(
             send_fn=self._send_direct_message,
             model=self.settings.heartbeat_model,
+            notify_fn=self._send_channel_notification,
         ))
 
         # Connect MCP server to Claude Code via stdio
