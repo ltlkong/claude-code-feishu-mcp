@@ -1,0 +1,26 @@
+{
+  "identities": {
+    "feishu": {
+      "ou_8dceb221740a61fe962a5b7a5d092824": "boss",
+      "ou_921b89ecaa3ed0f8dbf8a2805fd20eba": "mama",
+      "ou_0bf1b41c1f50568637f5a66362d508ca": "jiejie",
+      "ou_d885f53033a5255418bdb23d2dbb7703": "jiefa",
+      "ou_12fca242b7a1a9d0e3480ad6c2675c88": "shushu"
+    },
+    "wechat": {
+      "o9cq80zKrmlO-HE2K8AYlT5X-tCc@im.wechat": "boss",
+      "o9cq801CB-UJvQ6TsNa1qwg3dgYk@im.wechat": "jiejie",
+      "o9cq806bNJv3P0lJe30OVW2mMfYU@im.wechat": "jiejie",
+      "o9cq800dk8F4rQbcqkuqErGp6fQQ@im.wechat": "shushu",
+      "o9cq803gPKRNEyYpqNeXN6R9NRHs@im.wechat": "jiefa"
+    }
+  },
+  "persons": [
+    "boss",
+    "jiefa",
+    "jiejie",
+    "lilisha",
+    "mama",
+    "shushu"
+  ]
+}
