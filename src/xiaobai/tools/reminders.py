@@ -1,24 +1,17 @@
-"""Reminder tools — thin shim over the legacy ``feishu_channel.reminder`` CLI.
+"""Reminder tools — thin wrapper over ``xiaobai.reminders_cli``.
 
-We reuse the existing cron-wiring module so that the crontab entries written
-by the live bot still work after Session 3 flips the entry point: the cron
-lines call ``python -m feishu_channel.reminder send/trigger …`` which only
-needs the CLI + ``_send_feishu_message`` / ``_trigger_smart_task`` helpers —
-those stay in their old home.
-
-Here we only re-export the three tool handlers (``create_reminder``,
-``list_reminders``, ``delete_reminder``) and the scheduled-task watcher
-coroutine that picks up smart-task files and fires them as channel
-notifications.
+The cron-wiring module lives in ``xiaobai.reminders_cli`` — crontab entries
+shell out to ``python -m xiaobai.reminders_cli send/trigger …`` and we
+re-export the three tool handlers (``create_reminder``, ``list_reminders``,
+``delete_reminder``) plus the scheduled-task watcher coroutine that picks up
+smart-task files and fires them as channel notifications.
 
 ``create_reminder`` and ``delete_reminder`` are **gated to Boss** — only the
 Boss user_id may schedule or remove reminders. ``list_reminders`` is public.
 
-TODO(session-3): deleting ``src/feishu_channel/`` will break both this
-re-export AND every live crontab entry that shells out to
-``python -m feishu_channel.reminder send/trigger …``. Session 3 must
-either move ``reminder.py`` into ``xiaobai`` and rewrite existing cron
-lines, or keep ``feishu_channel.reminder`` as a stub indefinitely.
+Note: existing crontab entries written pre-Session 3 reference
+``feishu_channel.reminder``. Boss must run ``scripts/migrate_reminder_crontab.sh``
+once after the bot restarts to rewrite those lines to the new module path.
 """
 
 from __future__ import annotations
@@ -30,8 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
 
-# Reuse the legacy reminder module — all cron wiring already works here.
-from feishu_channel.reminder import (  # type: ignore[import-not-found]
+from ..reminders_cli import (
     SCHEDULED_DIR,
     create_reminder as _create_reminder,
     delete_reminder as _delete_reminder,

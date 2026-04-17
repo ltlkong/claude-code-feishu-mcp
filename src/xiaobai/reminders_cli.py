@@ -7,9 +7,13 @@ Supports two types:
 Supports optional execution limits (max_runs) — auto-deletes cron after N executions.
 
 CLI usage (called by cron):
-    python -m feishu_channel.reminder send <chat_id> <message>
-    python -m feishu_channel.reminder trigger <chat_id> <prompt>
-    python -m feishu_channel.reminder limit <reminder_id> <max_runs> <subcommand...>
+    python -m xiaobai.reminders_cli send <chat_id> <message>
+    python -m xiaobai.reminders_cli trigger <chat_id> <prompt>
+    python -m xiaobai.reminders_cli limit <reminder_id> <max_runs> <subcommand...>
+
+Ported from ``feishu_channel.reminder`` in Session 3. The CRON_TAG stays as
+``# feishu-reminder:`` so that pre-migration crontab entries remain parseable
+by ``list_reminders`` / ``delete_reminder`` during the cutover window.
 """
 
 import json
@@ -24,21 +28,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
-# Tag used to identify our cron entries
+# Tag used to identify our cron entries (unchanged for backwards compat)
 CRON_TAG = "# feishu-reminder:"
 
-# Paths
+# Paths (unchanged — legacy scheduled tasks already sit here)
 COUNTER_DIR = Path("/tmp/feishu-channel/reminder_counts")
 SCHEDULED_DIR = Path("/tmp/feishu-channel/scheduled")
 
-# For cron commands, we call `python -m feishu_channel.reminder <subcmd>`
+# For cron commands, we call `python -m xiaobai.reminders_cli <subcmd>`
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PYTHON = _PROJECT_ROOT / "venv" / "bin" / "python"
-_MODULE = "feishu_channel.reminder"
+_MODULE = "xiaobai.reminders_cli"
 
 
 # ── Feishu message sending (used by cron) ────────────────────────
@@ -236,6 +239,8 @@ def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str
         smart: If True, triggers Claude to think instead of sending a fixed message.
         max_runs: Max execution count. 0 = unlimited (default). After N runs, cron auto-deletes.
     """
+    if not re.match(r'^[\d\s\*,\-/]+$', cron_expr.strip()):
+        return {"status": "error", "message": "Invalid characters in cron expression"}
     fields = cron_expr.strip().split()
     if len(fields) != 5:
         return {"status": "error", "message": f"Invalid cron expression: need 5 fields, got {len(fields)}"}
@@ -244,16 +249,22 @@ def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str
     local_cron = _utc_cron_to_local(cron_expr)
     logger.info("Cron timezone conversion: UTC %s -> local %s", cron_expr, local_cron)
 
-    safe_message = message.replace("'", "'\\''")
+    import shlex
+    # Validate IDs to prevent shell injection
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', reminder_id):
+        return {"status": "error", "message": f"Invalid reminder_id: {reminder_id}"}
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', chat_id):
+        return {"status": "error", "message": f"Invalid chat_id: {chat_id}"}
+    safe_message = shlex.quote(message)
     subcmd = "trigger" if smart else "send"
     mode_label = "smart" if smart else "simple"
 
-    # Build the actual command: python -m feishu_channel.reminder send/trigger <chat_id> '<message>'
-    actual_cmd = f"cd {_PROJECT_ROOT} && {PYTHON} -m {_MODULE} {subcmd} {chat_id} '{safe_message}'"
+    # Build the actual command: python -m xiaobai.reminders_cli send/trigger <chat_id> '<message>'
+    actual_cmd = f"cd {_PROJECT_ROOT} && {PYTHON} -m {_MODULE} {subcmd} {chat_id} {safe_message}"
 
     if max_runs > 0:
-        # Wrap with limit: python -m feishu_channel.reminder limit <id> <count> <actual_cmd...>
-        cmd = f"cd {_PROJECT_ROOT} && {PYTHON} -m {_MODULE} limit {reminder_id} {max_runs} {PYTHON} -m {_MODULE} {subcmd} {chat_id} '{safe_message}'"
+        # Wrap with limit: python -m xiaobai.reminders_cli limit <id> <count> <actual_cmd...>
+        cmd = f"cd {_PROJECT_ROOT} && {PYTHON} -m {_MODULE} limit {reminder_id} {max_runs} {PYTHON} -m {_MODULE} {subcmd} {chat_id} {safe_message}"
         mode_label += f"|max:{max_runs}"
         COUNTER_DIR.mkdir(parents=True, exist_ok=True)
         (COUNTER_DIR / f"{reminder_id}.count").write_text(str(max_runs))

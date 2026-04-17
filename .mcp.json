@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "feishu": {
+    "channel": {
       "command": "python",
-      "args": ["-m", "feishu_channel.server"]
+      "args": [
+        "-m",
+        "xiaobai.mcp_server"
+      ]
     }
   }
 }

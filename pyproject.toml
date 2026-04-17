@@ -1,17 +1,19 @@
 [project]
-name = "feishu-channel"
-version = "0.1.0"
-description = "Feishu Channel for Claude Code"
+name = "xiaobai"
+version = "0.2.0"
+description = "Xiaobai — multi-channel MCP bot (Feishu + WeChat) for Claude Code"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0",
     "lark-oapi>=1.5.0",
     "pydantic-settings>=2.0",
     "httpx>=0.27",
+    "cryptography>=42.0",
+    "qrcode>=7.0",
 ]
 
 [project.scripts]
-feishu-channel = "feishu_channel.server:main"
+xiaobai = "xiaobai.mcp_server:main"
 
 [build-system]
 requires = ["setuptools>=75"]

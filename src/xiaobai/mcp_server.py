@@ -12,9 +12,6 @@ Responsibilities:
   :class:`NotificationPipeline`.
 * Run :func:`mcp.server.stdio.stdio_server` and bind the write_stream so
   notifications reach Claude Code.
-
-The live bot keeps running on the legacy ``src/feishu_channel/server.py``
-until Session 3 flips ``.mcp.json`` and ``pyproject.toml``.
 """
 
 from __future__ import annotations
