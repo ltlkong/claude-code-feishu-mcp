@@ -114,40 +114,62 @@ def manage_heartbeat(
 # ── Activity tracking ────────────────────────────────────────────
 
 _last_activity: dict[str, float] = {}
-_pending_auto_adds: set[str] = set()
+_msg_counts: dict[str, int] = {}              # lifetime message count per chat
 _pending_auto_labels: dict[str, str] = {}
+
+# Auto-add / auto-cleanup thresholds
+_AUTO_ADD_MSG_THRESHOLD = 5          # require N messages before auto-adding
+_AUTO_CLEANUP_IDLE_DAYS = 7          # drop auto-added chats idle this long
 
 
 def mark_activity(chat_id: str = "", label: str = "") -> None:
-    """Record that a chat just had activity. Buffers auto-add."""
-    if chat_id:
-        _last_activity[chat_id] = time.time()
-        _pending_auto_adds.add(chat_id)
-        if label:
-            _pending_auto_labels[chat_id] = label
+    """Record activity. Only auto-adds after >= N messages from this chat."""
+    if not chat_id:
+        return
+    _last_activity[chat_id] = time.time()
+    _msg_counts[chat_id] = _msg_counts.get(chat_id, 0) + 1
+    if label:
+        _pending_auto_labels[chat_id] = label
 
 
 def _flush_auto_adds() -> None:
-    """Persist any buffered auto-adds to the watchlist."""
-    if not _pending_auto_adds:
-        return
+    """Persist auto-adds for chats that have crossed the message threshold."""
     wl = _load_watchlist()
     changed = False
-    for chat_id in list(_pending_auto_adds):
-        if chat_id not in wl:
-            lbl = _pending_auto_labels.get(chat_id, "") or chat_id[:12]
-            wl[chat_id] = {
-                "added": time.time(),
-                "label": lbl,
-                "auto": True,
-                "interval": _DEFAULT_INTERVAL,
-                "last_checked": 0,
-            }
-            changed = True
-            logger.info("Heartbeat: auto-added %s to watchlist", chat_id[:12])
-    _pending_auto_adds.clear()
+    for chat_id, count in list(_msg_counts.items()):
+        if chat_id in wl:
+            continue
+        if count < _AUTO_ADD_MSG_THRESHOLD:
+            continue
+        lbl = _pending_auto_labels.get(chat_id, "") or chat_id[:12]
+        wl[chat_id] = {
+            "added": time.time(),
+            "label": lbl,
+            "auto": True,
+            "interval": _DEFAULT_INTERVAL,
+            "last_checked": 0,
+        }
+        changed = True
+        logger.info("Heartbeat: auto-added %s (%d msgs) to watchlist", chat_id[:12], count)
     if changed:
         _save_watchlist(wl)
+
+
+def _cleanup_idle_autos() -> None:
+    """Remove auto-added chats with no activity for _AUTO_CLEANUP_IDLE_DAYS."""
+    wl = _load_watchlist()
+    cutoff = time.time() - _AUTO_CLEANUP_IDLE_DAYS * 86400
+    removed = []
+    for chat_id, info in list(wl.items()):
+        if not info.get("auto"):
+            continue
+        last = _last_activity.get(chat_id, info.get("added", 0))
+        if last < cutoff:
+            del wl[chat_id]
+            removed.append(chat_id[:12])
+    if removed:
+        _save_watchlist(wl)
+        logger.info("Heartbeat: auto-cleanup removed %d idle chats: %s", len(removed), removed)
 
 
 def is_chat_inactive(chat_id: str) -> bool:
@@ -185,6 +207,7 @@ async def heartbeat_loop(
                 continue
 
             _flush_auto_adds()
+            _cleanup_idle_autos()
             watchlist = _load_watchlist()
             if not watchlist:
                 await asyncio.sleep(_POLL_SECONDS)
