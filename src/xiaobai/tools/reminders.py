@@ -13,6 +13,12 @@ notifications.
 
 ``create_reminder`` and ``delete_reminder`` are **gated to Boss** — only the
 Boss user_id may schedule or remove reminders. ``list_reminders`` is public.
+
+TODO(session-3): deleting ``src/feishu_channel/`` will break both this
+re-export AND every live crontab entry that shells out to
+``python -m feishu_channel.reminder send/trigger …``. Session 3 must
+either move ``reminder.py`` into ``xiaobai`` and rewrite existing cron
+lines, or keep ``feishu_channel.reminder`` as a stub indefinitely.
 """
 
 from __future__ import annotations

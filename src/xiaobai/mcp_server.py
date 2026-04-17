@@ -448,6 +448,10 @@ class XiaobaiServer:
         # State originally on FeishuChannel in server.py:402-453
         self._last_reply_times: dict[str, str] = {}
         self._current_user: dict[str, str] = {}  # chat_id -> user_id
+        # Best-effort approximation of "who is Claude currently responding to"
+        # — updated from real user messages only, NOT scheduled-task injection.
+        # Used to gate Boss-only tools (create/delete_reminder).
+        self._last_active_user: str = ""
         self._profile_inject_state: dict[str, tuple[int, float]] = {}
         self._short_ids = ShortIdMap()
 
@@ -849,6 +853,7 @@ class XiaobaiServer:
         # Track current user for reply attribution
         if user_id:
             self._current_user[chat_id] = user_id
+            self._last_active_user = user_id
 
         # Queued-message detection: surface the last reply time
         last_reply_user = (
@@ -899,6 +904,10 @@ class XiaobaiServer:
         chat_id = meta.get("chat_id", "")
         user_id = meta.get("user_id", "")
         tools_heartbeat.mark_activity(chat_id, label=f"wechat:{user_id[:12]}")
+
+        if user_id:
+            self._current_user[chat_id] = user_id
+            self._last_active_user = user_id
 
         # Save to local history
         tools_messaging.save_wechat_message(content, meta, sender="user")
@@ -1057,14 +1066,13 @@ class XiaobaiServer:
             return await tools_docs.search_docs(self.feishu, arguments["query"])
 
         # ── Reminders (Boss-only create/delete) ─────────────
+        # Gate on ``_last_active_user`` — set during real inbound ingress, NOT
+        # during scheduled-task injection. Boss asking Claude to set a reminder
+        # in chat B (e.g. 老婆群) works because the gate reads who the last
+        # human-inbound user was, not who lives in the target chat.
         if name == "create_reminder":
-            # Caller user_id lives on ``_current_user[chat_id]`` when the tool
-            # is invoked in response to an inbound message. Fall back to the
-            # target chat's current user.
-            chat_id = arguments["chat_id"]
-            caller = self._current_user.get(chat_id, "")
             return tools_reminders.create_reminder(
-                caller,
+                self._last_active_user,
                 arguments["reminder_id"],
                 arguments["cron_expression"],
                 arguments["chat_id"],
@@ -1075,13 +1083,9 @@ class XiaobaiServer:
         if name == "list_reminders":
             return tools_reminders.list_reminders()
         if name == "delete_reminder":
-            # No chat_id in args — find any chat with Boss as current user.
-            caller = next(
-                (u for u in self._current_user.values()
-                 if u == tools_reminders.BOSS_USER_ID),
-                "",
+            return tools_reminders.delete_reminder(
+                self._last_active_user, arguments["reminder_id"]
             )
-            return tools_reminders.delete_reminder(caller, arguments["reminder_id"])
 
         # ── Profile ─────────────────────────────────────────
         if name == "update_profile":
