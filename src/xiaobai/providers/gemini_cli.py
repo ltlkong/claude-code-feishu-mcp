@@ -74,6 +74,8 @@ class GeminiCliProvider:
         proc = await asyncio.create_subprocess_exec(
             self._command,
             *self._args,
+            "--include-directories",
+            "/tmp/feishu-channel,/tmp/wechat-channel",
             "-p",
             prompt,
             stdout=asyncio.subprocess.PIPE,

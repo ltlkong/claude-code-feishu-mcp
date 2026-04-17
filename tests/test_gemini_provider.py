@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from xiaobai.providers.base import ProviderEvent
 from xiaobai.providers.gemini_cli import GeminiCliProvider
@@ -96,6 +97,36 @@ class GeminiCliProviderTests(unittest.IsolatedAsyncioTestCase):
         await provider.handle_event(ProviderEvent("hello", {"chat_id": "c1"}))
 
         self.assertEqual(calls, [])
+
+    async def test_subprocess_includes_media_directories(self):
+        captured = {}
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b'{"tool_calls":[]}', b""
+
+        async def fake_create_subprocess_exec(*cmd, **kwargs):
+            captured["cmd"] = cmd
+            return FakeProc()
+
+        provider = GeminiCliProvider(
+            dispatch_tool=lambda name, arguments: None,
+            instructions="You are Xiaobai.",
+            command="gemini",
+            args=["--yolo"],
+            timeout_seconds=5,
+        )
+
+        with patch("asyncio.create_subprocess_exec", fake_create_subprocess_exec):
+            output = await provider._run_subprocess("prompt")
+
+        self.assertEqual(output, '{"tool_calls":[]}')
+        self.assertIn("--include-directories", captured["cmd"])
+        include_value = captured["cmd"][captured["cmd"].index("--include-directories") + 1]
+        self.assertIn("/tmp/feishu-channel", include_value)
+        self.assertIn("/tmp/wechat-channel", include_value)
 
     async def test_plain_text_without_chat_id_is_dropped(self):
         calls = []
