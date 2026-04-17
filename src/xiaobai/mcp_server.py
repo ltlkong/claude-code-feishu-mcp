@@ -47,6 +47,7 @@ from .tools import (
     media_search as tools_media_search,
     messaging as tools_messaging,
     profile as tools_profile,
+    relationships as tools_relationships,
     reminders as tools_reminders,
     wechat_login as tools_wechat_login,
 )
@@ -862,22 +863,33 @@ class XiaobaiServer:
         if last_reply:
             meta["last_reply_at"] = last_reply
 
-        # Profile injection — throttled (1st msg, every 10th, or after 5 min)
+        # Person / profile injection — throttled (1st msg, every 10th, or after 5 min).
+        # Person context (channel-agnostic, from workspace/state/relationships/) takes
+        # precedence over the per-chat profile — it's richer and tracks cross-channel
+        # identity. Falls back to legacy profile for users not yet linked to a person.
         if user_id:
-            profile = tools_profile.load_profile(chat_id, user_id)
+            person_ctx = tools_relationships.person_context_for("feishu", user_id)
+            profile = "" if person_ctx else tools_profile.load_profile(chat_id, user_id)
             if profile:
                 tools_profile.register_user_alias(user_id, profile)
             key = f"{chat_id}:{user_id}"
             count, last_time = self._profile_inject_state.get(key, (0, 0))
             now = time.time()
-            if not profile:
+            effective = person_ctx or profile
+            if not effective:
                 meta["user_profile"] = "NEW — create profile"
             elif count == 0 or count >= 10 or (now - last_time) > 300:
-                meta["user_profile"] = profile
+                meta["user_profile"] = effective
                 self._profile_inject_state[key] = (1, now)
             else:
-                user_name = tools_profile.get_user_alias(user_id)
-                meta["user_profile"] = f"(see earlier profile for {user_name})"
+                # Short form — pull display name from person record or legacy alias
+                display = ""
+                if person_ctx:
+                    pid = tools_relationships.resolve("feishu", user_id)
+                    rec = tools_relationships.load_person(pid) if pid else None
+                    display = rec.display_name if rec else ""
+                display = display or tools_profile.get_user_alias(user_id)
+                meta["user_profile"] = f"(see earlier profile for {display})"
                 self._profile_inject_state[key] = (count + 1, last_time)
 
             user_name = tools_profile.get_user_alias(user_id)
@@ -908,6 +920,24 @@ class XiaobaiServer:
 
         # Save to local history
         tools_messaging.save_wechat_message(content, meta, sender="user")
+
+        # Person context injection — same throttle as Feishu path.
+        if user_id:
+            person_ctx = tools_relationships.person_context_for("wechat", user_id)
+            key = f"{chat_id}:{user_id}"
+            count, last_time = self._profile_inject_state.get(key, (0, 0))
+            now = time.time()
+            if not person_ctx:
+                meta["user_profile"] = "NEW — create profile"
+            elif count == 0 or count >= 10 or (now - last_time) > 300:
+                meta["user_profile"] = person_ctx
+                self._profile_inject_state[key] = (1, now)
+            else:
+                pid = tools_relationships.resolve("wechat", user_id)
+                rec = tools_relationships.load_person(pid) if pid else None
+                display = rec.display_name if rec else user_id[:12]
+                meta["user_profile"] = f"(see earlier profile for {display})"
+                self._profile_inject_state[key] = (count + 1, last_time)
 
         request_id = meta.get("request_id", "") or str(uuid.uuid4())
         message_id = meta.get("message_id", "")
