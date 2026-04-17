@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c 'select(.tool_name // \"\" | startswith(\"mcp__channel__\")) | {ts: (now | strftime(\"%Y-%m-%dT%H:%M:%SZ\")), tool: .tool_name, chat_id: (.tool_input.chat_id // .tool_input.user_id // null), request_id: .tool_input.request_id, input_bytes: (.tool_input | tostring | length), output_bytes: (.tool_response | tostring | length)}' >> /tmp/xiaobai_stats.jsonl 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "find /tmp/feishu-channel -type f -mmin +120 -delete 2>/dev/null; find /tmp -maxdepth 1 -name 'search_img_*' -type f -mmin +120 -delete 2>/dev/null; true"
+          }
+        ]
+      }
+    ]
+  }
+}
