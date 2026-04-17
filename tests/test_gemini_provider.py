@@ -74,6 +74,29 @@ class GeminiCliProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [("reply", {"chat_id": "c1", "text": "plain answer"})])
 
+    async def test_malformed_tool_json_is_not_sent_as_plain_text(self):
+        calls = []
+
+        async def dispatch(name, arguments):
+            calls.append((name, arguments))
+            return {"status": "ok"}
+
+        async def run_gemini(prompt):
+            return '{"tool_calls":[{"name":"reply","arguments":{"chat_id":"老板p2p","text":"在呢老板" patterns=""}}]}'
+
+        provider = GeminiCliProvider(
+            dispatch_tool=dispatch,
+            instructions="You are Xiaobai.",
+            command="gemini",
+            args=["--yolo"],
+            timeout_seconds=5,
+            run_gemini=run_gemini,
+        )
+
+        await provider.handle_event(ProviderEvent("hello", {"chat_id": "c1"}))
+
+        self.assertEqual(calls, [])
+
     async def test_plain_text_without_chat_id_is_dropped(self):
         calls = []
 

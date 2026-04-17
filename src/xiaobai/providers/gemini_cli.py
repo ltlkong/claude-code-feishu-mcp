@@ -63,6 +63,10 @@ class GeminiCliProvider:
                     )
             return
 
+        if self._looks_like_tool_response(output):
+            logger.error("Gemini returned invalid tool-call JSON: %s", output[:500])
+            return
+
         if output:
             await self._reply_if_possible(event, output)
 
@@ -86,8 +90,10 @@ class GeminiCliProvider:
         return (
             f"{self._instructions}\n\n"
             "You are handling one Xiaobai chat event.\n"
-            "Return JSON only. Prefer tool_calls. Available tools include reply, "
-            "reply_image, reply_file, reply_video, read_messages, send_reaction.\n\n"
+            "Return VALID JSON only. Do not return markdown fences. Do not add "
+            "fields outside the schema. Prefer tool_calls. Available tools "
+            "include reply, reply_image, reply_file, reply_video, read_messages, "
+            "send_reaction.\n\n"
             f"content: {event.content}\n"
             f"meta: {json.dumps(event.meta, ensure_ascii=False)}\n\n"
             "Response shape: "
@@ -119,6 +125,17 @@ class GeminiCliProvider:
             if isinstance(name, str) and isinstance(arguments, dict):
                 calls.append(ProviderToolCall(name=name, arguments=arguments))
         return calls
+
+    def _looks_like_tool_response(self, output: str) -> bool:
+        stripped = output.lstrip()
+        return (
+            stripped.startswith("{")
+            and (
+                '"tool_calls"' in stripped
+                or '"name"' in stripped
+                or '"arguments"' in stripped
+            )
+        )
 
     async def _reply_if_possible(self, event: ProviderEvent, text: str) -> None:
         chat_id = event.meta.get("chat_id", "")
