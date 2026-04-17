@@ -1,3 +1,8 @@
+---
+name: random-timer
+description: Schedule a one-shot smart reminder at a random time within a specified window. Use when you need unpredictable timing — e.g., posting to social media at natural-looking times, sending heartbeat-style messages that don't look mechanical, or running a task "sometime in the next 2 hours." Uses create_reminder with smart=true and max_runs=1.
+---
+
 # Random Timer Skill
 
 Create a one-shot smart reminder at a random time within a specified window. Useful for scheduling tasks at unpredictable intervals — e.g., posting to social media at natural-looking times.

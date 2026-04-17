@@ -1,3 +1,8 @@
+---
+name: feishu-card
+description: Build rich Feishu interactive cards with components, data charts, and structured layouts. Use when creating dynamic visual content such as dashboards, reports, option panels, forms, or data visualizations via reply_card. Covers V2 card JSON structure, size limits (<28 KB), CardKit pitfalls (row_height, element counts), and component catalogs.
+---
+
 # Feishu Card Skill
 
 Build rich Feishu cards with interactive components, data charts, and structured layouts.
