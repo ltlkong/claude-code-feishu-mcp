@@ -96,3 +96,49 @@ class GeminiCliProviderTests(unittest.IsolatedAsyncioTestCase):
         await provider.handle_event(ProviderEvent("hello", {}))
 
         self.assertEqual(calls, [])
+
+    async def test_provider_failure_does_not_post_failure_message(self):
+        calls = []
+
+        async def dispatch(name, arguments):
+            calls.append((name, arguments))
+            return {"status": "ok"}
+
+        async def run_gemini(prompt):
+            raise RuntimeError("Operation cancelled.")
+
+        provider = GeminiCliProvider(
+            dispatch_tool=dispatch,
+            instructions="You are Xiaobai.",
+            command="gemini",
+            args=["--yolo"],
+            timeout_seconds=5,
+            run_gemini=run_gemini,
+        )
+
+        await provider.handle_event(ProviderEvent("hello", {"chat_id": "c1"}))
+
+        self.assertEqual(calls, [])
+
+    async def test_tool_dispatch_failure_does_not_raise_or_fallback_reply(self):
+        calls = []
+
+        async def dispatch(name, arguments):
+            calls.append((name, arguments))
+            raise KeyError("No channel owns chat_id")
+
+        async def run_gemini(prompt):
+            return '{"tool_calls":[{"name":"reply","arguments":{"chat_id":"bad","text":"hi"}}]}'
+
+        provider = GeminiCliProvider(
+            dispatch_tool=dispatch,
+            instructions="You are Xiaobai.",
+            command="gemini",
+            args=["--yolo"],
+            timeout_seconds=5,
+            run_gemini=run_gemini,
+        )
+
+        await provider.handle_event(ProviderEvent("hello", {"chat_id": "c1"}))
+
+        self.assertEqual(calls, [("reply", {"chat_id": "bad", "text": "hi"})])

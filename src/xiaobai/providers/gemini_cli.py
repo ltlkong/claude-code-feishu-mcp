@@ -46,17 +46,21 @@ class GeminiCliProvider:
         try:
             output = (await self._run_gemini(prompt)).strip()
         except TimeoutError:
-            await self._reply_if_possible(event, "Gemini timed out.")
+            logger.error("Gemini provider timed out")
             return
         except Exception as e:
             logger.error("Gemini provider failed: %s", e)
-            await self._reply_if_possible(event, "Gemini provider failed.")
             return
 
         calls = self._parse_tool_calls(output)
         if calls:
             for call in calls:
-                await self._dispatch_tool(call.name, call.arguments)
+                try:
+                    await self._dispatch_tool(call.name, call.arguments)
+                except Exception as e:
+                    logger.error(
+                        "Gemini tool dispatch failed for %s: %s", call.name, e
+                    )
             return
 
         if output:

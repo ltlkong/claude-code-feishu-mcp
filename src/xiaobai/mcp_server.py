@@ -498,7 +498,7 @@ class XiaobaiServer:
             return ClaudeMcpProvider(self._write_notification)
         if provider == "gemini":
             return GeminiCliProvider(
-                dispatch_tool=self._dispatch_tool,
+                dispatch_tool=self._dispatch_provider_tool,
                 instructions=self.settings.load_instructions(),
                 command=self.settings.gemini_command,
                 args=shlex.split(self.settings.gemini_args),
@@ -1015,20 +1015,28 @@ class XiaobaiServer:
 
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-            # Resolve aliases / short ids — identical to legacy behavior.
-            if "chat_id" in arguments and arguments["chat_id"]:
-                arguments["chat_id"] = tools_profile.resolve_alias(arguments["chat_id"])
-            if "user_id" in arguments and arguments["user_id"]:
-                arguments["user_id"] = tools_profile.resolve_user_alias(arguments["user_id"])
-            if "message_id" in arguments and arguments["message_id"]:
-                arguments["message_id"] = orchestrator._resolve_message_id(arguments["message_id"])
-            if "request_id" in arguments and arguments["request_id"]:
-                arguments["request_id"] = orchestrator._resolve_request_id(arguments["request_id"])
-            if "reply_to" in arguments and arguments.get("reply_to"):
-                arguments["reply_to"] = orchestrator._resolve_message_id(arguments["reply_to"])
-
+            arguments = orchestrator._resolve_tool_arguments(arguments)
             result = await orchestrator._dispatch_tool(name, arguments)
             return [types.TextContent(type="text", text=json.dumps(result))]
+
+    def _resolve_tool_arguments(self, arguments: dict) -> dict:
+        """Resolve aliases / short ids before dispatching a tool call."""
+        resolved = dict(arguments)
+        if "chat_id" in resolved and resolved["chat_id"]:
+            resolved["chat_id"] = tools_profile.resolve_alias(resolved["chat_id"])
+        if "user_id" in resolved and resolved["user_id"]:
+            resolved["user_id"] = tools_profile.resolve_user_alias(resolved["user_id"])
+        if "message_id" in resolved and resolved["message_id"]:
+            resolved["message_id"] = self._resolve_message_id(resolved["message_id"])
+        if "request_id" in resolved and resolved["request_id"]:
+            resolved["request_id"] = self._resolve_request_id(resolved["request_id"])
+        if "reply_to" in resolved and resolved.get("reply_to"):
+            resolved["reply_to"] = self._resolve_message_id(resolved["reply_to"])
+        return resolved
+
+    async def _dispatch_provider_tool(self, name: str, arguments: dict) -> dict:
+        """Dispatch a provider-generated tool call with MCP-equivalent resolution."""
+        return await self._dispatch_tool(name, self._resolve_tool_arguments(arguments))
 
     async def _dispatch_tool(self, name: str, arguments: dict) -> dict:
         """Branch on tool name. Assumes aliases already resolved."""
