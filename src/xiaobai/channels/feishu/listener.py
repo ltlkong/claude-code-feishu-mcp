@@ -1,0 +1,508 @@
+"""Feishu WebSocket listener — ported from feishu_channel/feishu.py.
+
+Key preservation:
+
+* The **lark-oapi monkey-patch** at the top of the module is IDENTICAL to
+  the legacy one. It must run at import time so lark's WebSocket dispatcher
+  routes card-action frames through our handler instead of silently dropping
+  them. If lark-oapi's internal ``_handle_data_frame`` changes, this patch
+  may break; check after upgrading.
+
+* Dedup + sender gating + active_chats + last_ws_msg_time + message recovery
+  loop + ``_pull_recent_messages`` are all preserved verbatim.
+
+* Token handling is delegated to a shared :class:`TokenProvider` so this
+  listener and the :class:`CardManager` share one refresh.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+import uuid
+from collections import OrderedDict
+from datetime import datetime, timezone
+from typing import Awaitable, Callable
+
+import httpx
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import (
+    P2ImMessageReactionCreatedV1,
+    P2ImMessageReceiveV1,
+    P2ImMessageRecalledV1,
+)
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    CallBackToast,
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
+from lark_oapi.ws.client import HEADER_TYPE, _get_by_key
+
+from ...core.auth import TokenProvider
+from .api import pull_recent_messages
+
+logger = logging.getLogger(__name__)
+
+# ── Monkey-patch: route card action frames through event dispatcher ──
+# lark-oapi's _handle_data_frame silently drops MessageType.CARD frames.
+# We rewrite the type header from "card" to "event" so they reach our handler.
+# Tested with lark-oapi 1.5.x — if the library changes _handle_data_frame,
+# this patch may break. Check after upgrading lark-oapi.
+
+if not hasattr(lark.ws.Client, "_handle_data_frame"):
+    logger.warning(
+        "lark-oapi API changed: _handle_data_frame not found, card actions may not work"
+    )
+
+_original_handle = getattr(lark.ws.Client, "_handle_data_frame", None)
+
+
+if _original_handle:
+    async def _patched_handle_data_frame(self, frame):  # type: ignore[no-redef]
+        type_ = _get_by_key(frame.headers, HEADER_TYPE)
+        if type_ == "card":
+            for h in frame.headers:
+                if h.key == HEADER_TYPE:
+                    h.value = "event"
+                    break
+        return await _original_handle(self, frame)
+
+    lark.ws.Client._handle_data_frame = _patched_handle_data_frame
+
+
+# ── Dedup cache ──────────────────────────────────────────────────────
+
+
+class _DedupCache:
+    """OrderedDict-based dedup with TTL. Thread-safe."""
+
+    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600):
+        self._cache: OrderedDict[str, float] = OrderedDict()
+        self._max_size = max_size
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+
+    def seen(self, key: str) -> bool:
+        """Return True if key was seen within TTL. Adds key if new."""
+        with self._lock:
+            now = time.time()
+            # Evict expired
+            while self._cache:
+                oldest_key, oldest_time = next(iter(self._cache.items()))
+                if now - oldest_time > self._ttl:
+                    self._cache.popitem(last=False)
+                else:
+                    break
+            if key in self._cache:
+                return True
+            self._cache[key] = now
+            if len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
+            return False
+
+
+# ── Card action element parsing ──────────────────────────────────────
+
+
+def _parse_card_action(data: P2CardActionTrigger) -> tuple[str, dict]:
+    """Parse a card action into ``(text_description, meta_dict)``."""
+    event = data.event
+    action = event.action
+    tag = action.tag
+    name = action.name or tag
+    value = action.value
+
+    if tag == "button":
+        text = f"[User clicked button ({name}): {value}]"
+    elif tag.startswith("select"):
+        text = f"[User selected ({name}): {value}]"
+    elif tag == "input":
+        text = f"[User input ({name}): {value}]"
+    elif tag == "form":
+        form_data = ", ".join(f"{k}={v}" for k, v in (value or {}).items())
+        text = f"[User submitted form ({name}): {form_data}]"
+    elif tag in ("date_picker", "time_picker"):
+        text = f"[User picked date/time ({name}): {value}]"
+    elif tag in ("checker", "multi_select_static", "multi_select_person"):
+        text = f"[User multi-selected ({name}): {value}]"
+    else:
+        text = f"[Card action ({tag}): {json.dumps(value)}]"
+
+    request_id = str(uuid.uuid4())
+    meta = {
+        "type": "card_action",
+        "chat_id": event.context.open_chat_id,
+        "user_id": event.operator.open_id,
+        "request_id": request_id,
+        "action_tag": tag,
+        "action_value": json.dumps(value) if not isinstance(value, str) else value,
+        "open_message_id": event.context.open_message_id,
+    }
+    return text, meta
+
+
+# ── Message content parsing ──────────────────────────────────────────
+
+
+def parse_message_content(msg) -> tuple[str, str]:
+    """Parse a Feishu message event into ``(message_type, content_text)``.
+
+    For text messages, returns the rendered text (mentions resolved).
+    For media, returns a placeholder JSON — the actual download happens later.
+    """
+    msg_type = msg.message.message_type
+    content_str = msg.message.content
+
+    try:
+        content = json.loads(content_str)
+    except (json.JSONDecodeError, TypeError):
+        return msg_type, content_str or ""
+
+    if msg_type == "text":
+        text = content.get("text", "")
+        mentions = getattr(msg.message, "mentions", None) or []
+        for m in mentions:
+            key = getattr(m, "key", None)
+            name = getattr(m, "name", None) or ""
+            id_obj = getattr(m, "id", None)
+            open_id = getattr(id_obj, "open_id", "") if id_obj else ""
+            if key and name:
+                replacement = f"@{name}({open_id})" if open_id else f"@{name}"
+                text = text.replace(key, replacement)
+        return "text", text
+    elif msg_type == "image":
+        image_key = content.get("image_key", "")
+        return "image", json.dumps({"image_key": image_key, "message_id": msg.message.message_id})
+    elif msg_type == "audio":
+        file_key = content.get("file_key", "")
+        return "audio", json.dumps({"file_key": file_key, "message_id": msg.message.message_id})
+    elif msg_type == "file":
+        file_key = content.get("file_key", "")
+        file_name = content.get("file_name", "")
+        return "file", json.dumps({
+            "file_key": file_key, "file_name": file_name,
+            "message_id": msg.message.message_id,
+        })
+    else:
+        return msg_type, content_str or ""
+
+
+# ── Feishu Listener ──────────────────────────────────────────────────
+
+OnMessageCallback = Callable[[str, str, dict], Awaitable[None]]
+# (content, request_id, meta) -> None
+
+OnCardActionCallback = Callable[[str, dict], Awaitable[None]]
+# (content, meta) -> None
+
+
+class FeishuListener:
+    """Manages the Feishu WebSocket connection and dispatches events.
+
+    ``token_provider`` and ``http`` are supplied by the caller so token
+    refreshes are shared with the CardManager.
+    """
+
+    def __init__(
+        self,
+        app_id: str,
+        app_secret: str,
+        allowed_user_ids: list[str],
+        on_message: OnMessageCallback,
+        on_card_action: OnCardActionCallback,
+        token_provider: TokenProvider[str],
+        http: httpx.AsyncClient,
+    ):
+        self._app_id = app_id
+        self._app_secret = app_secret
+        self._allowed_user_ids = allowed_user_ids
+        self._on_message = on_message
+        self._on_card_action = on_card_action
+        self._dedup = _DedupCache()
+        self._ws_client: lark.ws.Client | None = None
+        self._token = token_provider
+        self._http = http
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # Initialized lazily in start()
+        self._active_chats: dict[str, float] = {}
+        self._last_ws_msg_time: dict[str, int] = {}
+
+    def _is_allowed(self, user_id: str) -> bool:
+        if not self._allowed_user_ids:
+            return True
+        return user_id in self._allowed_user_ids
+
+    # ── Sync handlers from lark-oapi ─────────────────────────────
+
+    def _handle_message(self, data: P2ImMessageReceiveV1) -> None:
+        """Sync handler called by lark-oapi. Dispatches async work."""
+        event = data.event
+        msg = event
+
+        msg_id = msg.message.message_id
+        if self._dedup.seen(msg_id):
+            return
+
+        sender_id = msg.sender.sender_id.open_id
+        if not self._is_allowed(sender_id):
+            return
+
+        message_type, content = parse_message_content(msg)
+        request_id = str(uuid.uuid4())
+
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        meta = {
+            "user_id": sender_id,
+            "chat_id": msg.message.chat_id,
+            "chat_type": msg.message.chat_type or "p2p",
+            "message_type": message_type,
+            "message_time": message_time,
+            "request_id": request_id,
+            "message_id": msg.message.message_id,
+        }
+        if msg.message.root_id:
+            meta["root_id"] = msg.message.root_id
+        if msg.message.parent_id:
+            meta["parent_id"] = msg.message.parent_id
+
+        # Track active chats and last message time for recovery
+        self._active_chats[msg.message.chat_id] = time.time()
+        if msg.message.create_time:
+            try:
+                self._last_ws_msg_time[msg.message.chat_id] = int(msg.message.create_time)
+            except (ValueError, TypeError):
+                pass
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_message(content, request_id, meta), self._loop
+            )
+
+    def _handle_card_action(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
+        """Handle card button clicks and form submissions."""
+        event = data.event
+        user_id = event.operator.open_id
+        if not self._is_allowed(user_id):
+            return P2CardActionTriggerResponse()
+
+        content, meta = _parse_card_action(data)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_card_action(content, meta), self._loop
+            )
+
+        resp = P2CardActionTriggerResponse()
+        toast = CallBackToast()
+        toast.type = "info"
+        toast.content = " "
+        resp.toast = toast
+        return resp
+
+    def _handle_reaction(self, data: P2ImMessageReactionCreatedV1) -> None:
+        """Handle reaction events — someone reacted to a message."""
+        event = data.event
+        if not event:
+            return
+
+        # Skip bot's own reactions
+        operator_type = event.operator_type or ""
+        if operator_type == "app":
+            return
+
+        user_id = ""
+        if event.user_id:
+            user_id = getattr(event.user_id, "open_id", "") or ""
+        if not self._is_allowed(user_id):
+            return
+
+        emoji_type = ""
+        if event.reaction_type:
+            emoji_type = getattr(event.reaction_type, "emoji_type", "") or ""
+
+        message_id = event.message_id or ""
+        content = f"[Reaction: {emoji_type} on message {message_id}]"
+        request_id = str(uuid.uuid4())
+
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        meta = {
+            "user_id": user_id,
+            "chat_id": "",
+            "chat_type": "unknown",
+            "message_type": "reaction",
+            "message_time": message_time,
+            "request_id": request_id,
+            "message_id": message_id,
+            "emoji_type": emoji_type,
+        }
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_message(content, request_id, meta), self._loop
+            )
+
+    def _handle_recall(self, data: P2ImMessageRecalledV1) -> None:
+        """Handle message recall events — someone unsent a message."""
+        event = data.event
+        if not event:
+            return
+
+        message_id = event.message_id or ""
+        chat_id = event.chat_id or ""
+        content = f"[Message recalled: {message_id}]"
+        request_id = str(uuid.uuid4())
+
+        message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        meta = {
+            "user_id": "",
+            "chat_id": chat_id,
+            "chat_type": "unknown",
+            "message_type": "recall",
+            "message_time": message_time,
+            "request_id": request_id,
+            "message_id": message_id,
+        }
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._on_message(content, request_id, meta), self._loop
+            )
+
+    # ── Lifecycle ────────────────────────────────────────────────
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Start the WebSocket listener in a background thread.
+
+        Args:
+            loop: The asyncio event loop running the MCP server.
+        """
+        self._loop = loop
+        self._active_chats = {}
+        self._last_ws_msg_time = {}
+
+        handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._handle_message)
+            .register_p2_im_message_reaction_created_v1(self._handle_reaction)
+            .register_p2_im_message_recalled_v1(self._handle_recall)
+            .register_p2_card_action_trigger(self._handle_card_action)
+            .build()
+        )
+        self._ws_client = lark.ws.Client(
+            self._app_id,
+            self._app_secret,
+            event_handler=handler,
+            log_level=lark.LogLevel.INFO,
+        )
+
+        thread = threading.Thread(target=self._ws_client.start, daemon=True)
+        thread.start()
+        logger.info("Feishu WebSocket listener started")
+
+        # Start message recovery loop
+        asyncio.ensure_future(self._message_recovery_loop())
+
+    async def stop(self) -> None:
+        """Best-effort stop. lark-oapi doesn't expose a clean shutdown API;
+        the daemon thread dies with the process."""
+        self._loop = None
+
+    # ── Message recovery ─────────────────────────────────────────
+
+    async def _recover_missed_messages(self) -> None:
+        """Check active chats for messages missed during WebSocket gaps.
+
+        Only messages **newer** than the last WebSocket-received message in a
+        chat are processed — everything else is assumed already delivered.
+        """
+        if not self._active_chats:
+            return
+
+        # Evict chats inactive for more than 2 hours
+        now = time.time()
+        stale = [cid for cid, t in self._active_chats.items() if now - t > 7200]
+        for cid in stale:
+            del self._active_chats[cid]
+            self._last_ws_msg_time.pop(cid, None)
+
+        recovered = 0
+        for chat_id in list(self._active_chats):
+            last_ws_time = self._last_ws_msg_time.get(chat_id)
+            if not last_ws_time:
+                continue  # No baseline yet — skip until we've seen at least one WS message
+
+            token = await self._token.get()
+            messages = await pull_recent_messages(self._http, token, chat_id, count=5)
+            for msg in messages:
+                msg_id = msg.get("message_id", "")
+                if not msg_id:
+                    continue
+
+                try:
+                    msg_ts = int(msg.get("create_time", 0))
+                except (ValueError, TypeError):
+                    continue
+                if msg_ts <= last_ws_time:
+                    continue
+
+                # Secondary dedup filter
+                if self._dedup.seen(msg_id):
+                    continue
+
+                sender = msg.get("sender", {})
+                sender_id = sender.get("id", "")
+                if sender.get("sender_type") == "app":
+                    continue
+                if not self._is_allowed(sender_id):
+                    continue
+
+                msg_type = msg.get("msg_type", "text")
+                body = msg.get("body", {})
+                content_str = body.get("content", "")
+
+                try:
+                    content_json = json.loads(content_str)
+                    if msg_type == "text":
+                        content = content_json.get("text", "")
+                    else:
+                        content = content_str
+                except (json.JSONDecodeError, TypeError):
+                    content = content_str
+
+                request_id = str(uuid.uuid4())
+                meta = {
+                    "user_id": sender_id,
+                    "chat_id": chat_id,
+                    "chat_type": msg.get("chat_type", "p2p"),
+                    "message_type": msg_type,
+                    "message_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "request_id": request_id,
+                    "message_id": msg_id,
+                }
+
+                logger.info(
+                    "Recovered missed message: %s in %s (ts=%d > last_ws=%d)",
+                    msg_id, chat_id, msg_ts, last_ws_time,
+                )
+                # Already in asyncio loop — ensure_future, not threadsafe
+                asyncio.ensure_future(self._on_message(content, request_id, meta))
+                recovered += 1
+
+        if recovered:
+            logger.info("Message recovery: recovered %d missed messages", recovered)
+
+    async def _message_recovery_loop(self) -> None:
+        """Periodically check for missed messages (every 60 seconds)."""
+        await asyncio.sleep(30)  # Initial delay
+        while True:
+            try:
+                await self._recover_missed_messages()
+            except Exception as e:
+                logger.error("Message recovery loop error: %s", e)
+            await asyncio.sleep(60)
