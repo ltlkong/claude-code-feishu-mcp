@@ -62,26 +62,29 @@ class NotificationPipeline:
         """Poll until ``debounce`` seconds of silence, then flush the buffer."""
         try:
             while True:
-                await asyncio.sleep(0.5)
-                if time.time() - self._last_appends.get(chat_id, 0) >= self._debounce:
+                while True:
+                    await asyncio.sleep(0.5)
+                    if time.time() - self._last_appends.get(chat_id, 0) >= self._debounce:
+                        break
+                pending = self._buffers.get(chat_id, [])[:]
+                self._buffers[chat_id] = []
+                if len(pending) == 1:
+                    await self._write(pending[0][0], pending[0][1])
+                elif len(pending) > 1:
+                    msgs = []
+                    for c, m in pending:
+                        msgs.append({
+                            "user_id": m.get("user_id", ""),
+                            "message_time": m.get("message_time", ""),
+                            "message_id": m.get("message_id", ""),
+                            "request_id": m.get("request_id", ""),
+                            "content": c,
+                        })
+                    merged_content = json.dumps(msgs, ensure_ascii=False)
+                    merged_meta = dict(pending[-1][1])
+                    merged_meta["message_type"] = "batch"
+                    await self._write(merged_content, merged_meta)
+                if not self._buffers.get(chat_id):
                     break
-            pending = self._buffers.get(chat_id, [])[:]
-            self._buffers[chat_id] = []
-            if len(pending) == 1:
-                await self._write(pending[0][0], pending[0][1])
-            elif len(pending) > 1:
-                msgs = []
-                for c, m in pending:
-                    msgs.append({
-                        "user_id": m.get("user_id", ""),
-                        "message_time": m.get("message_time", ""),
-                        "message_id": m.get("message_id", ""),
-                        "request_id": m.get("request_id", ""),
-                        "content": c,
-                    })
-                merged_content = json.dumps(msgs, ensure_ascii=False)
-                merged_meta = dict(pending[-1][1])
-                merged_meta["message_type"] = "batch"
-                await self._write(merged_content, merged_meta)
         finally:
             self._flushing.discard(chat_id)

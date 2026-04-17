@@ -152,6 +152,16 @@ Plain text fallback:
 - If output is not JSON and `meta.chat_id` exists, call `reply(meta.chat_id, output)`.
 - If no chat id exists, log and drop the response.
 
+## Gemini Context, Hooks, and Skills
+
+Gemini CLI does not automatically recognize Claude Code's `.claude` directory as Claude Code does.
+
+- `CLAUDE.md`: expose this to Gemini through root `GEMINI.md` using `@./CLAUDE.md`. Gemini CLI supports `GEMINI.md` context files and `@file.md` imports.
+- `.claude/hooks`: do not rely on them in Gemini provider mode. Gemini has its own hook system, but Xiaobai tool calls are executed by the provider bridge after Gemini returns JSON, so server-side validation is the reliable enforcement point.
+- `.claude/skills`: do not rely on native Claude skill discovery. For Gemini v1, important skill behavior must be included in `GEMINI.md`, provider prompt snippets, or future Gemini extensions.
+
+This keeps Gemini mode deterministic and avoids pretending Claude-specific runtime features are portable.
+
 ## Error Handling
 
 Provider errors should not crash listeners.

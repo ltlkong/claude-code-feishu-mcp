@@ -28,7 +28,7 @@ from ...core.channel import Capabilities, OnMessageCallback
 from .auth import login as ilink_login
 from .ilink import ILinkClient, MSG_FILE, MSG_IMAGE, MSG_VIDEO, MSG_VOICE
 from .listener import WeChatListener
-from .media import UPLOAD_FILE, UPLOAD_IMAGE, download_media, upload_media
+from .media import UPLOAD_FILE, UPLOAD_IMAGE, UPLOAD_VIDEO, download_media, upload_media
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class WeChatChannel:
         has_cards=False,
         has_reactions=False,
         has_audio=False,
-        has_video=False,  # send_video not implemented — TODO(session-2)
+        has_video=True,
         has_post=False,
         has_reply_to=False,
         has_read_history_api=False,  # history comes from local jsonl log
@@ -312,8 +312,33 @@ class WeChatChannel:
     # ── Capability-gated — not supported by WeChat ──────────────
 
     async def send_video(self, chat_id: str, path: str) -> dict:
-        # TODO(session-2): WeChat supports video via UPLOAD_VIDEO — port when needed.
-        return {"status": "error", "message": "send_video not implemented for WeChat"}
+        """Encrypt + upload video to WeChat CDN, then send video message."""
+        client = self._get_client_for(chat_id)
+        if not client:
+            return {"status": "error", "message": "WeChat not connected"}
+        try:
+            p = Path(path)
+            if not p.is_file():
+                return {"status": "error", "message": f"File not found: {path}"}
+            cdn_ref = await upload_media(client, p, UPLOAD_VIDEO, to_user_id=chat_id)
+            aes_key_b64 = _b64.b64encode(cdn_ref["aes_key"].encode()).decode()
+            await client.send_message(chat_id, [{
+                "type": MSG_VIDEO,
+                "video_item": {
+                    "media": {
+                        "encrypt_query_param": cdn_ref["encrypt_query_param"],
+                        "aes_key": aes_key_b64,
+                        "encrypt_type": 1,
+                    },
+                    "file_name": p.name,
+                    "len": str(cdn_ref["raw_size"]),
+                    "video_size": cdn_ref["cipher_size"],
+                },
+            }])
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error("WeChat send_video failed: %s", e)
+            return {"status": "error", "message": str(e)}
 
     async def send_audio_tts(self, chat_id: str, text: str) -> dict:
         return {"status": "error", "message": "send_audio_tts not supported by WeChat"}

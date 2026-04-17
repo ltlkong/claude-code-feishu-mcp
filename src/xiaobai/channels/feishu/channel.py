@@ -45,6 +45,17 @@ def _is_wechat_id(chat_id: str) -> bool:
     return chat_id.endswith("@im.wechat")
 
 
+def _unwrap_post_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the localized Feishu post body from a raw content payload."""
+    if "content" in data or "title" in data:
+        return data
+    for locale in ("zh_cn", "en_us", "ja_jp"):
+        body = data.get(locale)
+        if isinstance(body, dict):
+            return body
+    return data
+
+
 class FeishuChannel:
     """Feishu Channel adapter.
 
@@ -599,7 +610,11 @@ class FeishuChannel:
                             title = content_json.get("title", "")
                             text = (title + " " + " ".join(texts)).strip() if texts or title else "[card]"
                         elif msg_type == "post":
+                            content_json = _unwrap_post_body(content_json)
                             texts = []
+                            title = content_json.get("title", "")
+                            if title:
+                                texts.append(title)
                             for row in content_json.get("content", []):
                                 if isinstance(row, list):
                                     for el in row:

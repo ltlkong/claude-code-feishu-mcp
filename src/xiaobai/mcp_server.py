@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import sys
 import time
 import uuid
@@ -40,6 +41,9 @@ from .channels.wechat.channel import WeChatChannel
 from .config import Settings
 from .core.notifications import NotificationPipeline
 from .core.registry import ChannelRegistry
+from .providers.base import Provider, ProviderEvent
+from .providers.claude_mcp import ClaudeMcpProvider
+from .providers.gemini_cli import GeminiCliProvider
 from .tools import (
     cards as tools_cards,
     docs as tools_docs,
@@ -54,6 +58,17 @@ from .tools import (
 from .utils.short_ids import ShortIdMap
 
 logger = logging.getLogger(__name__)
+
+
+def _unwrap_feishu_post(data: dict[str, Any]) -> dict[str, Any]:
+    """Return the localized Feishu post body from a raw content payload."""
+    if "content" in data or "title" in data:
+        return data
+    for locale in ("zh_cn", "en_us", "ja_jp"):
+        body = data.get(locale)
+        if isinstance(body, dict):
+            return body
+    return data
 
 
 # ── Tool inputSchema (preserved from legacy server.py, descriptions trimmed) ──
@@ -462,6 +477,8 @@ class XiaobaiServer:
         # write stream.
         self._write_stream = None
         self._pipeline: NotificationPipeline | None = None
+        self._pending_notifications: list[tuple[str, dict[str, Any]]] = []
+        self._provider: Provider | None = None
 
         # MCP server + tool registration
         self.server: Server = Server(
@@ -470,6 +487,24 @@ class XiaobaiServer:
             instructions=self.settings.load_instructions(),
         )
         self._register_tools()
+        self._provider = self._build_provider()
+
+    # ── Provider selection ───────────────────────────────────────
+
+    def _build_provider(self) -> Provider:
+        """Build the configured model provider."""
+        provider = self.settings.xiaobai_provider.lower().strip()
+        if provider == "claude":
+            return ClaudeMcpProvider(self._write_notification)
+        if provider == "gemini":
+            return GeminiCliProvider(
+                dispatch_tool=self._dispatch_tool,
+                instructions=self.settings.load_instructions(),
+                command=self.settings.gemini_command,
+                args=shlex.split(self.settings.gemini_args),
+                timeout_seconds=self.settings.gemini_timeout_seconds,
+            )
+        raise ValueError(f"Unsupported XIAOBAI_PROVIDER: {self.settings.xiaobai_provider}")
 
     # ── Short-id helpers (thin adapters over ShortIdMap) ─────────
 
@@ -509,12 +544,29 @@ class XiaobaiServer:
         )
         await self._write_stream.send(SessionMessage(JSONRPCMessage(notification)))
 
+    async def _write_provider_event(self, content: str, meta: dict) -> None:
+        """Send a debounced event to the configured provider."""
+        if self._provider is None:
+            logger.warning("Provider not ready, dropping notification")
+            return
+        await self._provider.handle_event(ProviderEvent(content, meta))
+
     async def _send_channel_notification(self, content: str, meta: dict) -> None:
         """Queue a notification through the debounce pipeline."""
         if self._pipeline is None:
-            logger.warning("Notification pipeline not ready, dropping notification")
+            logger.warning("Notification pipeline not ready, queueing notification")
+            self._pending_notifications.append((content, dict(meta)))
             return
         await self._pipeline.send(content, meta)
+
+    async def _flush_pending_notifications(self) -> None:
+        """Flush notifications accumulated before the write pipeline existed."""
+        if self._pipeline is None:
+            return
+        pending = self._pending_notifications[:]
+        self._pending_notifications = []
+        for content, meta in pending:
+            await self._pipeline.send(content, meta)
 
     # ── Media dedup (md5 cache) ──────────────────────────────────
 
@@ -659,10 +711,10 @@ class XiaobaiServer:
         temp_dir = self.settings.temp_dir
 
         try:
-            data = json.loads(content_json)
+            data = _unwrap_feishu_post(json.loads(content_json))
             post = data.get("content", [])
             title = data.get("title", "")
-            token = await token_provider.get()
+            token = None
 
             lines: list[str] = []
             if title:
@@ -672,7 +724,7 @@ class XiaobaiServer:
                 line_parts: list[str] = []
                 for elem in line_elements:
                     tag = elem.get("tag", "")
-                    if tag == "text":
+                    if tag in ("text", "md"):
                         line_parts.append(elem.get("text", ""))
                     elif tag == "a":
                         text = elem.get("text", "")
@@ -686,6 +738,8 @@ class XiaobaiServer:
                         image_key = elem.get("image_key", "")
                         if image_key and message_id:
                             try:
+                                if token is None:
+                                    token = await token_provider.get()
                                 path = await download_image(
                                     http, token, message_id, image_key, temp_dir
                                 )
@@ -701,6 +755,8 @@ class XiaobaiServer:
                         file_name = elem.get("file_name", f"media_{media_idx}.mp4")
                         if file_key and message_id:
                             try:
+                                if token is None:
+                                    token = await token_provider.get()
                                 path = await download_file(
                                     http, token, message_id, file_key,
                                     file_name, temp_dir,
@@ -977,6 +1033,13 @@ class XiaobaiServer:
     async def _dispatch_tool(self, name: str, arguments: dict) -> dict:
         """Branch on tool name. Assumes aliases already resolved."""
         # ── Messaging (dispatched through ChannelRegistry) ───
+        def unsupported(channel, tool_name: str) -> dict:
+            channel_id = getattr(channel, "id", channel.__class__.__name__)
+            return {
+                "status": "error",
+                "message": f"{channel_id} does not support {tool_name}",
+            }
+
         if name == "reply":
             cid = arguments["chat_id"]
             channel = self.registry.get(cid)
@@ -1006,11 +1069,15 @@ class XiaobaiServer:
         if name == "reply_video":
             cid = arguments["chat_id"]
             channel = self.registry.get(cid)
+            if not channel.capabilities.has_video:
+                return unsupported(channel, "reply_video")
             return await tools_messaging.reply_video(channel, cid, arguments["video_path"])
 
         if name == "reply_post":
             cid = arguments["chat_id"]
             channel = self.registry.get(cid)
+            if not channel.capabilities.has_post:
+                return unsupported(channel, "reply_post")
             return await tools_messaging.reply_post(
                 channel, cid, arguments.get("title", ""), arguments["content"]
             )
@@ -1018,6 +1085,8 @@ class XiaobaiServer:
         if name == "reply_audio":
             cid = arguments["chat_id"]
             channel = self.registry.get(cid)
+            if not channel.capabilities.has_audio:
+                return unsupported(channel, "reply_audio")
             return await tools_messaging.reply_audio(channel, cid, arguments["text"])
 
         if name == "send_reaction":
@@ -1179,11 +1248,13 @@ class XiaobaiServer:
 
     # ── Main ─────────────────────────────────────────────────────
 
-    async def run(self) -> None:
-        """Start channels + MCP stdio server."""
-        loop = asyncio.get_running_loop()
+    async def _start_channels_and_tasks(self, loop) -> None:
+        """Start channel listeners and background task producers."""
+        if self._provider is not None:
+            await self._provider.start()
 
-        # Spin up every registered channel's listener, all going through _ingress.
+        # Spin up every registered channel's listener after notifications
+        # can be delivered.
         for channel in self.registry:
             await channel.start(loop, self._ingress)
 
@@ -1209,10 +1280,27 @@ class XiaobaiServer:
             )
         )
 
+    async def run(self) -> None:
+        """Start channels + MCP stdio server."""
+        loop = asyncio.get_running_loop()
+        provider = self.settings.xiaobai_provider.lower().strip()
+
+        if provider != "claude":
+            self._pipeline = NotificationPipeline(self._write_provider_event)
+            await self._flush_pending_notifications()
+            await self._start_channels_and_tasks(loop)
+            logger.info("Xiaobai running with provider=%s", provider)
+            await asyncio.Event().wait()
+            return
+
         # Connect MCP stdio
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
             self._write_stream = write_stream
-            self._pipeline = NotificationPipeline(self._write_notification)
+            self._pipeline = NotificationPipeline(self._write_provider_event)
+            await self._flush_pending_notifications()
+
+            await self._start_channels_and_tasks(loop)
+
             init_options = self.server.create_initialization_options(
                 experimental_capabilities={"claude/channel": {}}
             )

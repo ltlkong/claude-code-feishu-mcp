@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     ilink_cdn_url: str = "https://novac2c.cdn.weixin.qq.com/c2c"
     wechat_qr_notify_chat_id: str = ""
 
+    # ── Model provider ───────────────────────────────────────────
+    xiaobai_provider: str = "claude"
+    gemini_command: str = "gemini"
+    gemini_args: str = "--yolo"
+    gemini_timeout_seconds: int = 120
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
