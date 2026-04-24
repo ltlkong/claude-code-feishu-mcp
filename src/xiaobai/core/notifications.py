@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -41,7 +40,7 @@ class NotificationPipeline:
         self._debounce = debounce_seconds
 
         self._buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-        self._last_appends: dict[str, float] = {}
+        self._events: dict[str, asyncio.Event] = {}
         self._flushing: set[str] = set()
 
     async def send(self, content: str, meta: dict[str, Any]) -> None:
@@ -53,19 +52,30 @@ class NotificationPipeline:
         """
         chat_id = meta.get("chat_id", "_unknown")
         self._buffers.setdefault(chat_id, []).append((content, meta))
-        self._last_appends[chat_id] = time.time()
+        event = self._events.setdefault(chat_id, asyncio.Event())
+        event.set()
         if chat_id not in self._flushing:
             self._flushing.add(chat_id)
             asyncio.create_task(self._flush(chat_id))
 
     async def _flush(self, chat_id: str) -> None:
-        """Poll until ``debounce`` seconds of silence, then flush the buffer."""
+        """Wait up to ``debounce`` seconds of silence, then flush the buffer.
+
+        Each ``send()`` sets the per-chat asyncio Event, resetting the debounce
+        window. Flushing fires exactly ``debounce`` seconds after the last
+        append — no polling jitter.
+        """
+        event = self._events.setdefault(chat_id, asyncio.Event())
         try:
             while True:
-                while True:
-                    await asyncio.sleep(0.5)
-                    if time.time() - self._last_appends.get(chat_id, 0) >= self._debounce:
-                        break
+                event.clear()
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=self._debounce)
+                    # activity happened inside the window → restart debounce
+                    continue
+                except asyncio.TimeoutError:
+                    # silence achieved → flush
+                    pass
                 pending = self._buffers.get(chat_id, [])[:]
                 self._buffers[chat_id] = []
                 if len(pending) == 1:
