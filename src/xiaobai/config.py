@@ -61,8 +61,12 @@ class Settings(BaseSettings):
     # ── Model provider ───────────────────────────────────────────
     xiaobai_provider: str = "claude"
     gemini_command: str = "gemini"
-    gemini_args: str = "--yolo"
+    gemini_args: str = "--yolo --model gemini-3.1-flash-lite-preview"
     gemini_timeout_seconds: int = 120
+    cursor_command: str = "cursor-agent"
+    cursor_args: str = ""
+    cursor_prompt_flag: str = "-p"
+    cursor_timeout_seconds: int = 120
 
     model_config = SettingsConfigDict(
         env_file=".env",

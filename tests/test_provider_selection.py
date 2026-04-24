@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from xiaobai.mcp_server import XiaobaiServer
 from xiaobai.providers.claude_mcp import ClaudeMcpProvider
+from xiaobai.providers.cursor_cli import CursorCliProvider
 from xiaobai.providers.gemini_cli import GeminiCliProvider
 
 
@@ -41,6 +42,21 @@ class ProviderSelectionTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             server._build_provider()
+
+    def test_build_provider_can_select_cursor(self):
+        server = XiaobaiServer.__new__(XiaobaiServer)
+        server.settings = type("Settings", (), {
+            "xiaobai_provider": "cursor",
+            "cursor_command": "cursor-agent",
+            "cursor_args": "--json",
+            "cursor_prompt_flag": "-p",
+            "cursor_timeout_seconds": 120,
+            "load_instructions": lambda self: "instructions",
+        })()
+
+        provider = server._build_provider()
+
+        self.assertIsInstance(provider, CursorCliProvider)
 
     def test_provider_dispatch_resolves_chat_aliases_before_tool_dispatch(self):
         server = XiaobaiServer.__new__(XiaobaiServer)

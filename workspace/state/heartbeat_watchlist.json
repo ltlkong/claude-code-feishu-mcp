@@ -1,45 +1,26 @@
 {
-  "oc_d74e8b07162953a2dcc70a77b4928aa2": {
-    "added": 1774699886.099819,
-    "label": "亲妈群",
-    "interval": 90,
-    "last_checked": 1776407685.980126
-  },
   "oc_2b8d9d44412bb7e9a212a299f57d94c3": {
-    "added": 1774700171.506371,
-    "label": "老板p2p",
-    "interval": 90,
-    "last_checked": 1776407625.972459
-  },
-  "oc_bbcfea0f876f89203b11f304d9fc7b56": {
-    "added": 1774700173.194072,
-    "label": "妈妈p2p",
-    "interval": 90,
-    "last_checked": 1776407143.1726909
-  },
-  "oc_edb582364f3d14e8e382d75024917cde": {
-    "added": 1774745717.993909,
-    "label": "爸爸群",
-    "interval": 90,
-    "last_checked": 1776409701.931415
+    "added": 1776995444.04163,
+    "label": "ou_8dceb2217p2p",
+    "auto": true,
+    "interval": 10,
+    "last_checked": 1777052762.167722,
+    "silent_ticks": 0
   },
   "oc_b9b3e73e28cae9720dabacd95ac26cde": {
-    "added": 1774759587.159152,
-    "label": "姐姐群",
-    "interval": 45,
-    "last_checked": 1776408560.194755
-  },
-  "oc_cbaf0d52c0509012fb7f5a650fba953d": {
-    "added": 1774867964.484758,
-    "label": "姐夫p2p",
-    "interval": 30,
-    "last_checked": 1776408286.031112
+    "added": 1777001084.278024,
+    "label": "ou_8dceb2217\u7fa4",
+    "auto": true,
+    "interval": 10,
+    "last_checked": 1777074712.863916,
+    "silent_ticks": 12
   },
   "oc_d5f964e7890c9d419f8a6e43a9e1092d": {
-    "added": 1774895590.1990132,
-    "label": "Boss群",
+    "added": 1777003484.405737,
+    "label": "ou_921b89eca\u7fa4",
     "auto": true,
-    "interval": 45,
-    "last_checked": 1776408046.001936
+    "interval": 10,
+    "last_checked": 1777074712.863916,
+    "silent_ticks": 12
   }
 }

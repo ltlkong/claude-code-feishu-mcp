@@ -1,12 +1,15 @@
-.PHONY: claude gemini gemini-login test compile verify
+.PHONY: claude gemini cursor gemini-login test compile verify
 
 PYTHON ?= .venv/bin/python
 
 claude:
-	claude --dangerously-load-development-channels server:feishu --dangerously-skip-permissions --chrome
+	claude --dangerously-load-development-channels server:channel --dangerously-skip-permissions --chrome --resume
 
 gemini:
 	XIAOBAI_PROVIDER=gemini $(PYTHON) -m xiaobai.mcp_server
+
+cursor:
+	XIAOBAI_PROVIDER=cursor $(PYTHON) -m xiaobai.mcp_server
 
 gemini-login:
 	gemini

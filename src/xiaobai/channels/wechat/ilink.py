@@ -36,6 +36,15 @@ QR_REDIRECT = "scaned_but_redirect"
 QR_EXPIRED = "expired"
 
 
+class ILinkProtocolError(RuntimeError):
+    """Raised when iLink returns an application-level error payload."""
+
+    def __init__(self, errcode: int, errmsg: str) -> None:
+        super().__init__(f"iLink error {errcode}: {errmsg}")
+        self.errcode = errcode
+        self.errmsg = errmsg
+
+
 def _random_uin() -> str:
     """Generate a random X-WECHAT-UIN header value (base64 of random uint32)."""
     val = struct.unpack("I", os.urandom(4))[0]
@@ -201,12 +210,18 @@ class ILinkClient:
         )
         resp.raise_for_status()
         data = resp.json()
+        errcode = data.get("errcode")
+        if isinstance(errcode, int) and errcode != 0:
+            errmsg = str(data.get("errmsg", "unknown error"))
+            raise ILinkProtocolError(errcode, errmsg)
 
         msgs_count = len(data.get("msgs", []))
-        if msgs_count > 0 or not data.get("get_updates_buf"):
-            logger.info(
-                "getupdates: keys=%s msgs=%d ret=%s",
-                list(data.keys()), msgs_count, data.get("ret"),
+        if msgs_count > 0:
+            logger.info("getupdates: msgs=%d ret=%s", msgs_count, data.get("ret"))
+        elif not data.get("get_updates_buf"):
+            logger.debug(
+                "getupdates missing buffer: keys=%s ret=%s",
+                list(data.keys()), data.get("ret"),
             )
 
         if data.get("get_updates_buf"):

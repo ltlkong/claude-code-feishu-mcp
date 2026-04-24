@@ -14,13 +14,22 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from .ilink import ILinkClient, MSG_FILE, MSG_IMAGE, MSG_TEXT, MSG_VIDEO, MSG_VOICE
+from .ilink import (
+    ILinkClient,
+    ILinkProtocolError,
+    MSG_FILE,
+    MSG_IMAGE,
+    MSG_TEXT,
+    MSG_VIDEO,
+    MSG_VOICE,
+)
 
 logger = logging.getLogger(__name__)
 
 # Backoff settings
 MIN_BACKOFF = 1.0
 MAX_BACKOFF = 60.0
+IDLE_POLL_SLEEP_SECONDS = 0.3
 
 MSG_TYPE_NAMES = {
     MSG_TEXT: "text",
@@ -84,6 +93,20 @@ class WeChatListener:
 
                 if self._poll_count % 100 == 0:
                     logger.info("WeChat listener alive (polls=%d)", self._poll_count)
+                if not messages:
+                    # Guard against hot-looping when upstream returns immediately.
+                    await asyncio.sleep(IDLE_POLL_SLEEP_SECONDS)
+
+            except ILinkProtocolError as e:
+                if e.errcode in (-14,):
+                    logger.error(
+                        "WeChat session expired (errcode=%d), need re-login",
+                        e.errcode,
+                    )
+                    self._running = False
+                    break
+                logger.warning("iLink getupdates protocol error: %s", e)
+                await self._do_backoff()
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in (401, 403):

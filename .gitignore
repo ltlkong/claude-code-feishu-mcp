@@ -28,8 +28,13 @@ Thumbs.db
 # Logs
 *.log
 
-# Workspace (generated docs, skills data, temp outputs)
-workspace/docs/
+# Workspace (runtime state, browser profiles, generated artifacts)
+workspace/*
+!workspace/state/
+workspace/state/*
+!workspace/state/relationships/
+!workspace/state/heartbeat_blacklist.txt
+!workspace/state/heartbeat_watchlist.json
 
 # User profiles (per-user per-chat context)
 profiles/
