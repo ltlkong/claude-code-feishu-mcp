@@ -60,6 +60,11 @@ from .tools import (
 from .utils.logging import bind_request, span
 from .utils.short_ids import ShortIdMap
 
+# Fire a profile-refresh nudge once every N text messages from the same
+# (chat, user). 20 is a comfortable cadence — long enough for meaningful
+# new context to accumulate, short enough that stale profiles don't rot.
+PROFILE_REFRESH_INTERVAL = 20
+
 logger = logging.getLogger(__name__)
 
 
@@ -497,6 +502,11 @@ class XiaobaiServer:
         # Used to gate Boss-only tools (create/delete_reminder).
         self._last_active_user: str = ""
         self._profile_inject_state: dict[str, tuple[int, float]] = {}
+        # Counter for "time to review this person's profile" nudges.
+        # Every PROFILE_REFRESH_INTERVAL text messages from the same user in
+        # the same chat we set meta['profile_refresh_due']=True; Claude then
+        # reviews recent history and updates the person record if warranted.
+        self._profile_refresh_counter: dict[str, int] = {}
         self._short_ids = ShortIdMap()
 
         # Media dedup (md5 → (path, sender, ts))
@@ -1092,6 +1102,20 @@ class XiaobaiServer:
             mood = self._mood_tracker.current_mood(chat_id)
             if mood:
                 meta["mood_signal"] = mood
+
+        # Profile refresh nudge — every PROFILE_REFRESH_INTERVAL text
+        # messages from the same (chat, user) flip a meta flag so Claude
+        # reviews recent context and updates the person record if there's
+        # new signal (new hobbies/work/concerns). Resets after firing so
+        # it fires at ~every 20th message.
+        if user_id and message_type == "text":
+            rkey = f"{chat_id}:{user_id}"
+            bumped = self._profile_refresh_counter.get(rkey, 0) + 1
+            if bumped >= PROFILE_REFRESH_INTERVAL:
+                meta["profile_refresh_due"] = True
+                self._profile_refresh_counter[rkey] = 0
+            else:
+                self._profile_refresh_counter[rkey] = bumped
 
         # Time-of-day persona — tell Claude what hour it is where the
         # target user lives so replies can slow down at night, pick up
