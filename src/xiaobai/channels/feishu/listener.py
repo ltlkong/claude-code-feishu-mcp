@@ -147,11 +147,13 @@ def _parse_card_action(data: P2CardActionTrigger) -> tuple[str, dict]:
 # ── Message content parsing ──────────────────────────────────────────
 
 
-def parse_message_content(msg) -> tuple[str, str]:
-    """Parse a Feishu message event into ``(message_type, content_text)``.
+def parse_message_content(msg) -> tuple[str, str, dict | None]:
+    """Parse a Feishu message event.
 
-    For text messages, returns the rendered text (mentions resolved).
-    For media, returns a placeholder JSON — the actual download happens later.
+    Returns ``(message_type, content_text, payload)`` where ``payload`` is
+    the already-parsed content dict for media messages (image/audio/file)
+    so downstream ingress does not need to ``json.loads`` it again. ``None``
+    for text and unknown types.
     """
     msg_type = msg.message.message_type
     content_str = msg.message.content
@@ -159,7 +161,7 @@ def parse_message_content(msg) -> tuple[str, str]:
     try:
         content = json.loads(content_str)
     except (json.JSONDecodeError, TypeError):
-        return msg_type, content_str or ""
+        return msg_type, content_str or "", None
 
     if msg_type == "text":
         text = content.get("text", "")
@@ -172,22 +174,26 @@ def parse_message_content(msg) -> tuple[str, str]:
             if key and name:
                 replacement = f"@{name}({open_id})" if open_id else f"@{name}"
                 text = text.replace(key, replacement)
-        return "text", text
+        return "text", text, None
     elif msg_type == "image":
         image_key = content.get("image_key", "")
-        return "image", json.dumps({"image_key": image_key, "message_id": msg.message.message_id})
+        payload = {"image_key": image_key, "message_id": msg.message.message_id}
+        return "image", json.dumps(payload), payload
     elif msg_type == "audio":
         file_key = content.get("file_key", "")
-        return "audio", json.dumps({"file_key": file_key, "message_id": msg.message.message_id})
+        payload = {"file_key": file_key, "message_id": msg.message.message_id}
+        return "audio", json.dumps(payload), payload
     elif msg_type == "file":
         file_key = content.get("file_key", "")
         file_name = content.get("file_name", "")
-        return "file", json.dumps({
-            "file_key": file_key, "file_name": file_name,
+        payload = {
+            "file_key": file_key,
+            "file_name": file_name,
             "message_id": msg.message.message_id,
-        })
+        }
+        return "file", json.dumps(payload), payload
     else:
-        return msg_type, content_str or ""
+        return msg_type, content_str or "", None
 
 
 # ── Feishu Listener ──────────────────────────────────────────────────
@@ -250,7 +256,7 @@ class FeishuListener:
         if not self._is_allowed(sender_id):
             return
 
-        message_type, content = parse_message_content(msg)
+        message_type, content, payload = parse_message_content(msg)
         request_id = str(uuid.uuid4())
 
         message_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -264,6 +270,8 @@ class FeishuListener:
             "request_id": request_id,
             "message_id": msg.message.message_id,
         }
+        if payload is not None:
+            meta["_payload"] = payload
         if msg.message.root_id:
             meta["root_id"] = msg.message.root_id
         if msg.message.parent_id:
@@ -466,10 +474,16 @@ class FeishuListener:
                 body = msg.get("body", {})
                 content_str = body.get("content", "")
 
+                payload = None
                 try:
                     content_json = json.loads(content_str)
                     if msg_type == "text":
                         content = content_json.get("text", "")
+                    elif msg_type in ("image", "audio", "file", "media"):
+                        payload = content_json if isinstance(content_json, dict) else None
+                        if payload is not None:
+                            payload.setdefault("message_id", msg_id)
+                        content = content_str
                     else:
                         content = content_str
                 except (json.JSONDecodeError, TypeError):
@@ -485,6 +499,8 @@ class FeishuListener:
                     "request_id": request_id,
                     "message_id": msg_id,
                 }
+                if payload is not None:
+                    meta["_payload"] = payload
 
                 logger.info(
                     "Recovered missed message: %s in %s (ts=%d > last_ws=%d)",

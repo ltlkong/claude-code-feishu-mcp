@@ -41,8 +41,10 @@ from .channels.wechat.channel import WeChatChannel
 from .config import Settings
 from .core.notifications import NotificationPipeline
 from .core.registry import ChannelRegistry
+from .core.hooks import HookRunner
 from .providers.base import Provider, ProviderEvent
 from .providers.claude_mcp import ClaudeMcpProvider
+from .providers.cursor_cli import CursorCliProvider
 from .providers.gemini_cli import GeminiCliProvider
 from .tools import (
     cards as tools_cards,
@@ -479,6 +481,7 @@ class XiaobaiServer:
         self._pipeline: NotificationPipeline | None = None
         self._pending_notifications: list[tuple[str, dict[str, Any]]] = []
         self._provider: Provider | None = None
+        self._hook_runner = HookRunner()
 
         # MCP server + tool registration
         self.server: Server = Server(
@@ -503,6 +506,15 @@ class XiaobaiServer:
                 command=self.settings.gemini_command,
                 args=shlex.split(self.settings.gemini_args),
                 timeout_seconds=self.settings.gemini_timeout_seconds,
+            )
+        if provider == "cursor":
+            return CursorCliProvider(
+                dispatch_tool=self._dispatch_provider_tool,
+                instructions=self.settings.load_instructions(),
+                command=self.settings.cursor_command,
+                args=shlex.split(self.settings.cursor_args),
+                prompt_flag=self.settings.cursor_prompt_flag,
+                timeout_seconds=self.settings.cursor_timeout_seconds,
             )
         raise ValueError(f"Unsupported XIAOBAI_PROVIDER: {self.settings.xiaobai_provider}")
 
@@ -598,6 +610,7 @@ class XiaobaiServer:
         message_type: str,
         message_id: str = "",
         sender: str = "",
+        payload: dict | None = None,
     ) -> str:
         """Download Feishu media and return a description with local path.
 
@@ -611,7 +624,9 @@ class XiaobaiServer:
 
         for attempt in range(2):
             try:
-                data = json.loads(content_json)
+                # Reuse the payload already parsed by the listener when present
+                # to avoid a redundant json.loads on every media message.
+                data = payload if payload is not None else json.loads(content_json)
                 token = await token_provider.get()
                 msg_id = message_id or data.get("message_id", "")
 
@@ -893,10 +908,12 @@ class XiaobaiServer:
 
         # Media / post enrichment
         message_type = meta.get("message_type", "")
+        # Pop the listener-parsed payload so it never reaches Claude's meta.
+        payload = meta.pop("_payload", None)
         if message_type in ("image", "audio", "file", "media"):
             sender_alias = tools_profile.get_user_alias(user_id) or user_id
             content = await self._download_feishu_media(
-                content, message_type, message_id, sender=sender_alias
+                content, message_type, message_id, sender=sender_alias, payload=payload,
             )
         elif message_type == "post":
             content = await self._process_post_content(content, message_id)
@@ -1036,7 +1053,16 @@ class XiaobaiServer:
 
     async def _dispatch_provider_tool(self, name: str, arguments: dict) -> dict:
         """Dispatch a provider-generated tool call with MCP-equivalent resolution."""
-        return await self._dispatch_tool(name, self._resolve_tool_arguments(arguments))
+        resolved = self._resolve_tool_arguments(arguments)
+        result = await self._dispatch_tool(name, resolved)
+        hook_runner = getattr(self, "_hook_runner", None)
+        if hook_runner is not None:
+            await hook_runner.run_post_tool_use(
+                tool_name=name,
+                tool_input=resolved,
+                tool_response=result,
+            )
+        return result
 
     async def _dispatch_tool(self, name: str, arguments: dict) -> dict:
         """Branch on tool name. Assumes aliases already resolved."""
