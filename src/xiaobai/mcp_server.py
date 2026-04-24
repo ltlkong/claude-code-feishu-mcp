@@ -484,6 +484,10 @@ class XiaobaiServer:
         self._provider: Provider | None = None
         self._hook_runner = HookRunner()
 
+        # Continuous human-feel state: mood (per chat) + future hooks.
+        from .core.mood import MoodTracker
+        self._mood_tracker = MoodTracker()
+
         # MCP server + tool registration
         self.server: Server = Server(
             name="channel",
@@ -1051,6 +1055,15 @@ class XiaobaiServer:
             content = await media_task
         elif post_task is not None:
             content = await post_task
+
+        # Mood signal — rule-based, cheap, surfaced so Claude matches tone
+        # continuously across the conversation instead of re-reading from
+        # scratch each turn. Only scored on real text messages.
+        if message_type == "text" and content:
+            self._mood_tracker.record(chat_id, content)
+            mood = self._mood_tracker.current_mood(chat_id)
+            if mood:
+                meta["mood_signal"] = mood
 
         await self._send_channel_notification(content, meta)
 
