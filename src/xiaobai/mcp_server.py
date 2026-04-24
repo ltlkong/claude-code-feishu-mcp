@@ -1065,6 +1065,20 @@ class XiaobaiServer:
             if mood:
                 meta["mood_signal"] = mood
 
+        # Time-of-day persona — tell Claude what hour it is where the
+        # target user lives so replies can slow down at night, pick up
+        # during the day, etc.
+        if user_id:
+            from .core.persona import persona_signal
+            person_id = tools_relationships.resolve("feishu", user_id)
+            record = tools_relationships.load_person(person_id) if person_id else None
+            sig = persona_signal(
+                tz_str=getattr(record, "timezone", "") or "",
+                location=getattr(record, "location", "") or "",
+            )
+            if sig:
+                meta.update(sig)
+
         await self._send_channel_notification(content, meta)
 
     async def _ingress_wechat(self, content: str, meta: dict[str, Any]) -> None:
