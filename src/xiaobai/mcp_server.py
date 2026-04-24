@@ -581,6 +581,8 @@ class XiaobaiServer:
         if user_id:
             self._last_reply_times[f"{chat_id}:{user_id}"] = now
         self._last_reply_times[chat_id] = now
+        # Let the heartbeat loop snap silent_ticks back to 0 on our outbound.
+        tools_heartbeat.mark_bot_reply(chat_id)
 
     # ── Notification out ─────────────────────────────────────────
 
@@ -1465,10 +1467,28 @@ class XiaobaiServer:
         tools_heartbeat.configure_inactivity(
             self.settings.heartbeat_inactivity_minutes
         )
+
+        def _is_quiet_hour(chat_id: str) -> bool:
+            """Decide whether to skip a heartbeat for this chat right now."""
+            from .core.persona import persona_signal
+            user_id = self._current_user.get(chat_id, "")
+            if not user_id:
+                return False
+            person_id = tools_relationships.resolve("feishu", user_id)
+            record = tools_relationships.load_person(person_id) if person_id else None
+            if not record:
+                return False
+            sig = persona_signal(
+                tz_str=getattr(record, "timezone", "") or "",
+                location=getattr(record, "location", "") or "",
+            )
+            return sig.get("hour_bucket") in ("deep_night", "late_night")
+
         asyncio.create_task(
             tools_heartbeat.heartbeat_loop(
                 interval_minutes=self.settings.heartbeat_interval_minutes,
                 notify_fn=self._send_channel_notification,
+                quiet_check=_is_quiet_hour,
             )
         )
 
