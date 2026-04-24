@@ -558,11 +558,25 @@ class XiaobaiServer:
         await self._write_stream.send(SessionMessage(JSONRPCMessage(notification)))
 
     async def _write_provider_event(self, content: str, meta: dict) -> None:
-        """Send a debounced event to the configured provider."""
+        """Send a debounced event to the configured provider.
+
+        The routing decision is computed via ``select_model`` and logged
+        under ``xiaobai.routing`` so traces show which tier *would* run
+        once the cheap/expensive split is activated. Today we still use
+        the single configured provider — flipping the switch is a follow
+        up (needs both providers live + cheap handler wired).
+        """
         if self._provider is None:
             logger.warning("Provider not ready, dropping notification")
             return
-        await self._provider.handle_event(ProviderEvent(content, meta))
+        event = ProviderEvent(content, meta)
+        from .providers.routing import select_model
+        decision = select_model(event)
+        logging.getLogger("xiaobai.routing").info(
+            "route",
+            extra={"tier": decision.tier, "reason": decision.reason},
+        )
+        await self._provider.handle_event(event)
 
     async def _send_channel_notification(self, content: str, meta: dict) -> None:
         """Queue a notification through the debounce pipeline."""
