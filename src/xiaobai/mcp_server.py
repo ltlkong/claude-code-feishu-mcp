@@ -41,8 +41,10 @@ from .channels.wechat.channel import WeChatChannel
 from .config import Settings
 from .core.notifications import NotificationPipeline
 from .core.registry import ChannelRegistry
+from .core.hooks import HookRunner
 from .providers.base import Provider, ProviderEvent
 from .providers.claude_mcp import ClaudeMcpProvider
+from .providers.cursor_cli import CursorCliProvider
 from .providers.gemini_cli import GeminiCliProvider
 from .tools import (
     cards as tools_cards,
@@ -55,6 +57,7 @@ from .tools import (
     reminders as tools_reminders,
     wechat_login as tools_wechat_login,
 )
+from .utils.logging import bind_request, span
 from .utils.short_ids import ShortIdMap
 
 logger = logging.getLogger(__name__)
@@ -479,6 +482,7 @@ class XiaobaiServer:
         self._pipeline: NotificationPipeline | None = None
         self._pending_notifications: list[tuple[str, dict[str, Any]]] = []
         self._provider: Provider | None = None
+        self._hook_runner = HookRunner()
 
         # MCP server + tool registration
         self.server: Server = Server(
@@ -503,6 +507,15 @@ class XiaobaiServer:
                 command=self.settings.gemini_command,
                 args=shlex.split(self.settings.gemini_args),
                 timeout_seconds=self.settings.gemini_timeout_seconds,
+            )
+        if provider == "cursor":
+            return CursorCliProvider(
+                dispatch_tool=self._dispatch_provider_tool,
+                instructions=self.settings.load_instructions(),
+                command=self.settings.cursor_command,
+                args=shlex.split(self.settings.cursor_args),
+                prompt_flag=self.settings.cursor_prompt_flag,
+                timeout_seconds=self.settings.cursor_timeout_seconds,
             )
         raise ValueError(f"Unsupported XIAOBAI_PROVIDER: {self.settings.xiaobai_provider}")
 
@@ -545,11 +558,25 @@ class XiaobaiServer:
         await self._write_stream.send(SessionMessage(JSONRPCMessage(notification)))
 
     async def _write_provider_event(self, content: str, meta: dict) -> None:
-        """Send a debounced event to the configured provider."""
+        """Send a debounced event to the configured provider.
+
+        The routing decision is computed via ``select_model`` and logged
+        under ``xiaobai.routing`` so traces show which tier *would* run
+        once the cheap/expensive split is activated. Today we still use
+        the single configured provider — flipping the switch is a follow
+        up (needs both providers live + cheap handler wired).
+        """
         if self._provider is None:
             logger.warning("Provider not ready, dropping notification")
             return
-        await self._provider.handle_event(ProviderEvent(content, meta))
+        event = ProviderEvent(content, meta)
+        from .providers.routing import select_model
+        decision = select_model(event)
+        logging.getLogger("xiaobai.routing").info(
+            "route",
+            extra={"tier": decision.tier, "reason": decision.reason},
+        )
+        await self._provider.handle_event(event)
 
     async def _send_channel_notification(self, content: str, meta: dict) -> None:
         """Queue a notification through the debounce pipeline."""
@@ -592,12 +619,34 @@ class XiaobaiServer:
 
     # ── Media download (inbound) ─────────────────────────────────
 
+    async def _download_feishu_media_timed(
+        self,
+        content_json: str,
+        message_type: str,
+        message_id: str,
+        sender_alias: str,
+        payload: dict | None,
+    ) -> str:
+        """Span-wrapped media download; used by the concurrent-ingress path."""
+        async with span(
+            "media.download", message_type=message_type, message_id=message_id
+        ):
+            return await self._download_feishu_media(
+                content_json, message_type, message_id,
+                sender=sender_alias, payload=payload,
+            )
+
+    async def _process_post_content_timed(self, content_json: str, message_id: str) -> str:
+        async with span("post.process", message_id=message_id):
+            return await self._process_post_content(content_json, message_id)
+
     async def _download_feishu_media(
         self,
         content_json: str,
         message_type: str,
         message_id: str = "",
         sender: str = "",
+        payload: dict | None = None,
     ) -> str:
         """Download Feishu media and return a description with local path.
 
@@ -611,7 +660,9 @@ class XiaobaiServer:
 
         for attempt in range(2):
             try:
-                data = json.loads(content_json)
+                # Reuse the payload already parsed by the listener when present
+                # to avoid a redundant json.loads on every media message.
+                data = payload if payload is not None else json.loads(content_json)
                 token = await token_provider.get()
                 msg_id = message_id or data.get("message_id", "")
 
@@ -872,6 +923,48 @@ class XiaobaiServer:
         message_id = meta.get("message_id", "")
         request_id = meta.get("request_id", "") or str(uuid.uuid4())
 
+        with bind_request(request_id):
+            async with span(
+                "ingress.feishu",
+                chat_id=chat_id,
+                user_id=user_id,
+                message_type=meta.get("message_type", ""),
+            ):
+                await self._ingress_feishu_body(content, meta, chat_id, user_id, chat_type, message_id, request_id)
+
+    async def _ingress_feishu_body(
+        self,
+        content: str,
+        meta: dict[str, Any],
+        chat_id: str,
+        user_id: str,
+        chat_type: str,
+        message_id: str,
+        request_id: str,
+    ) -> None:
+
+        # Kick off media download first so it runs concurrently with the
+        # bookkeeping below (heartbeat, parent fetch, profile injection).
+        # For a large file this turns sequential 2-10s into overlap with the
+        # ~10-50ms of sync/async meta work that would have blocked it.
+        message_type = meta.get("message_type", "")
+        payload = meta.pop("_payload", None)  # never leak to Claude's meta
+        media_task: asyncio.Task[str] | None = None
+        post_task: asyncio.Task[str] | None = None
+        if message_type in ("image", "audio", "file", "media"):
+            sender_alias = tools_profile.get_user_alias(user_id) or user_id
+            media_task = asyncio.create_task(
+                self._download_feishu_media_timed(
+                    content, message_type, message_id, sender_alias, payload,
+                ),
+                name=f"media-download-{request_id}",
+            )
+        elif message_type == "post":
+            post_task = asyncio.create_task(
+                self._process_post_content_timed(content, message_id),
+                name=f"post-process-{request_id}",
+            )
+
         # Auto-add to heartbeat watchlist with a meaningful label
         user_alias = tools_profile.get_user_alias(user_id) if user_id else ""
         auto_label = ""
@@ -890,16 +983,6 @@ class XiaobaiServer:
             parent_text = await self._fetch_parent_content(parent_id)
             if parent_text is not None:
                 meta["reply_to_content"] = parent_text
-
-        # Media / post enrichment
-        message_type = meta.get("message_type", "")
-        if message_type in ("image", "audio", "file", "media"):
-            sender_alias = tools_profile.get_user_alias(user_id) or user_id
-            content = await self._download_feishu_media(
-                content, message_type, message_id, sender=sender_alias
-            )
-        elif message_type == "post":
-            content = await self._process_post_content(content, message_id)
 
         # Defer card creation — only made when Claude calls reply_card
         self.feishu.card_manager.register_pending(request_id, chat_id, message_id)
@@ -961,6 +1044,13 @@ class XiaobaiServer:
         short_msg, short_req = self._register_short_ids(message_id, request_id)
         meta["message_id"] = short_msg
         meta["request_id"] = short_req
+
+        # Resolve concurrent media/post work now — Claude needs the final
+        # content string before we fire the notification.
+        if media_task is not None:
+            content = await media_task
+        elif post_task is not None:
+            content = await post_task
 
         await self._send_channel_notification(content, meta)
 
@@ -1036,7 +1126,16 @@ class XiaobaiServer:
 
     async def _dispatch_provider_tool(self, name: str, arguments: dict) -> dict:
         """Dispatch a provider-generated tool call with MCP-equivalent resolution."""
-        return await self._dispatch_tool(name, self._resolve_tool_arguments(arguments))
+        resolved = self._resolve_tool_arguments(arguments)
+        result = await self._dispatch_tool(name, resolved)
+        hook_runner = getattr(self, "_hook_runner", None)
+        if hook_runner is not None:
+            await hook_runner.run_post_tool_use(
+                tool_name=name,
+                tool_input=resolved,
+                tool_response=result,
+            )
+        return result
 
     async def _dispatch_tool(self, name: str, arguments: dict) -> dict:
         """Branch on tool name. Assumes aliases already resolved."""
@@ -1332,6 +1431,10 @@ def main() -> None:
             logging.FileHandler("/tmp/xiaobai.log"),
         ],
     )
+    # Structured JSON log (additive) — enables request_id tracing and span
+    # timing without disturbing the human-readable stderr/log output.
+    from .utils.logging import install_jsonl_handler
+    install_jsonl_handler("/tmp/xiaobai.jsonl")
     server = build_server()
     asyncio.run(server.run())
 

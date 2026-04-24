@@ -185,10 +185,29 @@ def _dump_person_file(record: PersonRecord) -> str:
     return f"---\n{fm}\n---\n\n{body}\n" if body else f"---\n{fm}\n---\n"
 
 
+# Person file read cache — keyed by person_id, invalidated on mtime change.
+# Group chats read the same person record on every inbound message; without
+# this cache each message paid 1-3 disk I/O + frontmatter parse ops.
+_person_cache: dict[str, tuple[float, PersonRecord]] = {}
+
+
+def _invalidate_person(person_id: str) -> None:
+    _person_cache.pop(person_id, None)
+
+
 def load_person(person_id: str) -> PersonRecord | None:
     path = _person_path(person_id)
     if not path.is_file():
+        # Drop any stale cached copy from before a delete.
+        _person_cache.pop(person_id, None)
         return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _person_cache.get(person_id)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     try:
         text = path.read_text()
     except OSError:
@@ -199,7 +218,7 @@ def load_person(person_id: str) -> PersonRecord | None:
         channels = {}
     # Normalize: values must be lists
     channels = {k: (v if isinstance(v, list) else [v]) for k, v in channels.items() if v}
-    return PersonRecord(
+    record = PersonRecord(
         person_id=str(meta.get("person_id", person_id)),
         display_name=str(meta.get("display_name", person_id)),
         real_name=str(meta.get("real_name", "")),
@@ -211,12 +230,19 @@ def load_person(person_id: str) -> PersonRecord | None:
         channels=channels,
         body=body,
     )
+    _person_cache[person_id] = (mtime, record)
+    return record
 
 
 def save_person(record: PersonRecord) -> Path:
     _REL_DIR.mkdir(parents=True, exist_ok=True)
     path = _person_path(record.person_id)
     path.write_text(_dump_person_file(record))
+    # Prime cache with the just-written value.
+    try:
+        _person_cache[record.person_id] = (path.stat().st_mtime, record)
+    except OSError:
+        _person_cache.pop(record.person_id, None)
     return path
 
 
