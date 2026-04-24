@@ -29,55 +29,42 @@ logger = logging.getLogger(__name__)
 
 async def search_docs(feishu, query: str) -> dict:
     """Search Feishu cloud docs by keyword (tenant-token API)."""
-    http = feishu.http
-    token_provider = feishu.token
-    for attempt in range(2):
-        try:
-            token = await token_provider.get()
-            body: dict = {"search_key": query[:50], "count": 20, "offset": 0}
-            resp = await http.post(
-                "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
-                headers={"Authorization": f"Bearer {token}"},
-                json=body,
-            )
-            data = resp.json()
-            if attempt == 0 and is_token_error(data):
-                logger.info("Search docs: token expired, refreshing and retrying")
-                token_provider.invalidate()
-                continue
-            if data.get("code") != 0:
-                return {
-                    "status": "error",
-                    "message": f"Wiki search failed: {data.get('msg', 'unknown error')}",
-                }
-
-            items = data.get("data", {}).get("docs_entities", [])
-            total = data.get("data", {}).get("total", 0)
-            results = []
-            for item in items:
-                doc_token = item.get("docs_token", "")
-                doc_type = item.get("docs_type", "doc")
-                if doc_type == "bitable":
-                    url = f"https://feishu.cn/base/{doc_token}"
-                elif doc_type == "sheet":
-                    url = f"https://feishu.cn/sheets/{doc_token}"
-                else:
-                    url = f"https://feishu.cn/docx/{doc_token}"
-                results.append({
-                    "title": item.get("title", ""),
-                    "url": url,
-                    "doc_token": doc_token,
-                    "doc_type": doc_type,
-                })
-            return {
-                "status": "ok",
-                "count": len(results),
-                "total": total,
-                "results": results,
-            }
-        except Exception as e:
-            return {"status": "error", "message": f"Wiki search error: {e}"}
-    return {"status": "error", "message": "Wiki search failed after retry"}
+    try:
+        data = await feishu.api.post_json(
+            "https://open.feishu.cn/open-apis/suite/docs-api/search/object",
+            json_body={"search_key": query[:50], "count": 20, "offset": 0},
+        )
+    except Exception as e:
+        return {"status": "error", "message": f"Wiki search error: {e}"}
+    if data.get("code") != 0:
+        return {
+            "status": "error",
+            "message": f"Wiki search failed: {data.get('msg', 'unknown error')}",
+        }
+    items = data.get("data", {}).get("docs_entities", [])
+    total = data.get("data", {}).get("total", 0)
+    results = []
+    for item in items:
+        doc_token = item.get("docs_token", "")
+        doc_type = item.get("docs_type", "doc")
+        if doc_type == "bitable":
+            url = f"https://feishu.cn/base/{doc_token}"
+        elif doc_type == "sheet":
+            url = f"https://feishu.cn/sheets/{doc_token}"
+        else:
+            url = f"https://feishu.cn/docx/{doc_token}"
+        results.append({
+            "title": item.get("title", ""),
+            "url": url,
+            "doc_token": doc_token,
+            "doc_type": doc_type,
+        })
+    return {
+        "status": "ok",
+        "count": len(results),
+        "total": total,
+        "results": results,
+    }
 
 
 # ── create_doc ───────────────────────────────────────────────────

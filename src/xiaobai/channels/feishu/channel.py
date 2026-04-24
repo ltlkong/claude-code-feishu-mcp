@@ -123,6 +123,11 @@ class FeishuChannel:
             http=self._http,
         )
 
+        # Shared API client (wraps http + token with the retry-on-token-error
+        # loop so tool handlers don't re-implement it 21 times).
+        from .api_client import FeishuApiClient
+        self._api_client = FeishuApiClient(self._http, self._token)
+
         # Card manager (drives reply_card)
         self.card_manager = CardManager(
             token_provider=self._token,
@@ -197,6 +202,11 @@ class FeishuChannel:
     def token(self) -> TokenProvider[str]:
         """Expose the shared TokenProvider (used by tool handlers in S2)."""
         return self._token
+
+    @property
+    def api(self):
+        """Expose the shared FeishuApiClient for tool handlers (retry loop)."""
+        return self._api_client
 
     # ── send_text (with markdown auto-detect) ────────────────────
 
