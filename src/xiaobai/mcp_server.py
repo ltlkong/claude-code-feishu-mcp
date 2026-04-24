@@ -1426,11 +1426,32 @@ class XiaobaiServer:
 
         # ── WeChat login ────────────────────────────────────
         if name == "wechat_login_qr":
-            return await tools_wechat_login.wechat_login_qr(
+            target_chat = arguments.get("chat_id", "")
+            result = await tools_wechat_login.wechat_login_qr(
                 self.wechat,
                 arguments.get("account_id", "new"),
-                arguments.get("chat_id", ""),
+                target_chat,
             )
+            # The tool used to claim `sent_to=chat_id` without actually
+            # delivering the QR image. Honor the claim by sending it here.
+            if (
+                result.get("status") == "ok"
+                and target_chat
+                and result.get("qr_image_path")
+            ):
+                try:
+                    channel = self.registry.get(target_chat)
+                    send_result = await tools_messaging.reply_image(
+                        channel, target_chat, result["qr_image_path"]
+                    )
+                    if send_result.get("status") != "ok":
+                        result["sent_to"] = ""
+                        result["deliver_warning"] = send_result.get("message", "deliver failed")
+                except Exception as e:
+                    logger.warning("wechat_login_qr auto-send failed: %s", e)
+                    result["sent_to"] = ""
+                    result["deliver_warning"] = str(e)
+            return result
 
         return {"status": "error", "message": f"Unknown tool: {name}"}
 
