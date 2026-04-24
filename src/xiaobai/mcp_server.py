@@ -363,6 +363,34 @@ TOOLS: list[types.Tool] = [
         },
     ),
     types.Tool(
+        name="manage_follow_up",
+        description=(
+            "Track time-anchored things you promised to revisit "
+            "('体检结果'/'周末见某人'/'这周末交稿'). "
+            "add: persist + schedule a smart reminder at due_at; when it fires you'll be prompted "
+            "to bring it up naturally. list: pending items. complete/cancel: close one. "
+            "Use this whenever the user mentions a future event worth checking in on."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["add", "list", "complete", "cancel"]},
+                "follow_up_id": {"type": "string", "default": ""},
+                "chat_id": {"type": "string", "default": ""},
+                "person_id": {"type": "string", "default": ""},
+                "topic": {"type": "string", "description": "short label, ~a few words", "default": ""},
+                "context": {"type": "string", "description": "the user's own words + any detail you'll need later", "default": ""},
+                "due_at": {
+                    "type": "string",
+                    "description": "ISO UTC (2026-05-01T09:00:00Z), bare date (2026-05-01), or relative (+3d, +72h, +2w)",
+                    "default": "",
+                },
+                "note": {"type": "string", "description": "complete: what actually happened", "default": ""},
+            },
+            "required": ["action"],
+        },
+    ),
+    types.Tool(
         name="wechat_login_qr",
         description=(
             "Generate a WeChat bot login QR. User scans to link their account. "
@@ -1343,6 +1371,20 @@ class XiaobaiServer:
                 arguments.get("chat_id", ""),
                 arguments.get("label", ""),
                 arguments.get("interval", 0),
+            )
+
+        # ── Follow-ups (time-anchored check-ins) ────────────
+        if name == "manage_follow_up":
+            from .tools import follow_ups as tools_follow_ups
+            return tools_follow_ups.manage_follow_up(
+                arguments["action"],
+                follow_up_id=arguments.get("follow_up_id", ""),
+                chat_id=arguments.get("chat_id", ""),
+                person_id=arguments.get("person_id", ""),
+                topic=arguments.get("topic", ""),
+                context=arguments.get("context", ""),
+                due_at=arguments.get("due_at", ""),
+                note=arguments.get("note", ""),
             )
 
         # ── Image search ────────────────────────────────────

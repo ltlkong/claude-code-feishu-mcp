@@ -130,6 +130,7 @@ Use with `user_local_hour` (raw int) for fine judgment calls.
 | Images | Travel→`photo` EN query. Funny→`gif`. Food→`photo` dish name. |
 | Run a skill | Native `Skill` tool — skills auto-discovered from `.claude/skills/` |
 | Someone wants to add you on WeChat | `wechat_login_qr(account_id)` then `reply_image(chat_id, qr_image_path)` — QR valid 2 min, must send image manually |
+| Time-anchored commitment | `manage_follow_up(action="add", chat_id, topic, context, due_at)` — user mentions a future event worth revisiting ("下周体检"/"周末见X"/"月底交稿") → add a follow-up (due_at accepts ISO, `2026-05-01`, or `+7d`/`+72h`/`+2w`). When it comes due you'll be woken with a prompt to bring it up naturally. |
 
 ## Files & Media
 
