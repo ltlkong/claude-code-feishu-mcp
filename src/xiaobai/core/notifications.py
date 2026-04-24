@@ -24,20 +24,43 @@ WriteFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class NotificationPipeline:
-    """Buffer per-chat notifications; flush after 3s of silence.
+    """Buffer per-chat notifications with adaptive debounce.
 
-    Text messages are debounced: buffered for up to 3 seconds, then all
-    pending notifications for the same chat are flushed. A single pending
+    Text messages are debounced: buffered until silence, then all pending
+    notifications for the same chat are flushed. A single pending
     notification is sent as-is; multiple notifications are merged into one
     ``batch``-typed notification whose ``content`` is a JSON array of the
-    originals. Non-text messages (heartbeat, card actions, media) go through
-    the same pipeline — the logic here matches the old ``server.py`` byte-
-    for-byte so existing downstream consumers still see the same payloads.
+    originals.
+
+    The debounce window is adaptive:
+
+    - ``short_debounce`` (default 1.0s) applies while the buffer holds a
+      single notification — a lone message gets flushed fast for snappy
+      responsiveness on sparse chats.
+    - ``long_debounce`` (default 3.0s) applies once the buffer has 2+
+      pending notifications — a burst in progress waits longer so related
+      messages end up in the same batch.
+
+    Legacy single-``debounce_seconds`` constructor still works; it binds
+    both windows to the same value and keeps the old behavior.
     """
 
-    def __init__(self, write_fn: WriteFn, debounce_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        write_fn: WriteFn,
+        debounce_seconds: float | None = None,
+        *,
+        short_debounce_seconds: float = 1.0,
+        long_debounce_seconds: float = 3.0,
+    ) -> None:
         self._write = write_fn
-        self._debounce = debounce_seconds
+        if debounce_seconds is not None:
+            # Legacy single-knob mode — both windows collapse to the value.
+            self._short_debounce = float(debounce_seconds)
+            self._long_debounce = float(debounce_seconds)
+        else:
+            self._short_debounce = float(short_debounce_seconds)
+            self._long_debounce = float(long_debounce_seconds)
 
         self._buffers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self._events: dict[str, asyncio.Event] = {}
@@ -58,19 +81,31 @@ class NotificationPipeline:
             self._flushing.add(chat_id)
             asyncio.create_task(self._flush(chat_id))
 
+    def _current_debounce(self, chat_id: str) -> float:
+        """Pick the debounce window based on buffer depth.
+
+        Single pending message → snappy flush (``short_debounce``).
+        Burst in progress (2+) → wait longer to batch related messages.
+        """
+        pending = len(self._buffers.get(chat_id, ()))
+        return self._long_debounce if pending >= 2 else self._short_debounce
+
     async def _flush(self, chat_id: str) -> None:
-        """Wait up to ``debounce`` seconds of silence, then flush the buffer.
+        """Wait for adaptive silence, then flush the buffer.
 
         Each ``send()`` sets the per-chat asyncio Event, resetting the debounce
-        window. Flushing fires exactly ``debounce`` seconds after the last
-        append — no polling jitter.
+        window. The window shortens to ``short_debounce`` while the buffer
+        holds a single message and widens to ``long_debounce`` once a burst
+        accumulates.
         """
         event = self._events.setdefault(chat_id, asyncio.Event())
         try:
             while True:
                 event.clear()
                 try:
-                    await asyncio.wait_for(event.wait(), timeout=self._debounce)
+                    await asyncio.wait_for(
+                        event.wait(), timeout=self._current_debounce(chat_id)
+                    )
                     # activity happened inside the window → restart debounce
                     continue
                 except asyncio.TimeoutError:
