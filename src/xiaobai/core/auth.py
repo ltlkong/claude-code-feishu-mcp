@@ -67,7 +67,9 @@ class TokenProvider(Generic[T]):
             # refreshed while we were waiting.
             if self._value is not None and (time.time() - self._fetched_at) < self._ttl:
                 return self._value
-            self._value = await self._fetch(self._http)
+            from ..utils.logging import span
+            async with span("token.fetch", name=self._name):
+                self._value = await self._fetch(self._http)
             self._fetched_at = time.time()
             logger.info("TokenProvider[%s] refreshed", self._name)
             return self._value

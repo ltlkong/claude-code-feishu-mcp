@@ -57,6 +57,7 @@ from .tools import (
     reminders as tools_reminders,
     wechat_login as tools_wechat_login,
 )
+from .utils.logging import bind_request, span
 from .utils.short_ids import ShortIdMap
 
 logger = logging.getLogger(__name__)
@@ -887,6 +888,26 @@ class XiaobaiServer:
         message_id = meta.get("message_id", "")
         request_id = meta.get("request_id", "") or str(uuid.uuid4())
 
+        with bind_request(request_id):
+            async with span(
+                "ingress.feishu",
+                chat_id=chat_id,
+                user_id=user_id,
+                message_type=meta.get("message_type", ""),
+            ):
+                await self._ingress_feishu_body(content, meta, chat_id, user_id, chat_type, message_id, request_id)
+
+    async def _ingress_feishu_body(
+        self,
+        content: str,
+        meta: dict[str, Any],
+        chat_id: str,
+        user_id: str,
+        chat_type: str,
+        message_id: str,
+        request_id: str,
+    ) -> None:
+
         # Auto-add to heartbeat watchlist with a meaningful label
         user_alias = tools_profile.get_user_alias(user_id) if user_id else ""
         auto_label = ""
@@ -912,11 +933,13 @@ class XiaobaiServer:
         payload = meta.pop("_payload", None)
         if message_type in ("image", "audio", "file", "media"):
             sender_alias = tools_profile.get_user_alias(user_id) or user_id
-            content = await self._download_feishu_media(
-                content, message_type, message_id, sender=sender_alias, payload=payload,
-            )
+            async with span("media.download", message_type=message_type, message_id=message_id):
+                content = await self._download_feishu_media(
+                    content, message_type, message_id, sender=sender_alias, payload=payload,
+                )
         elif message_type == "post":
-            content = await self._process_post_content(content, message_id)
+            async with span("post.process", message_id=message_id):
+                content = await self._process_post_content(content, message_id)
 
         # Defer card creation — only made when Claude calls reply_card
         self.feishu.card_manager.register_pending(request_id, chat_id, message_id)
@@ -1358,6 +1381,10 @@ def main() -> None:
             logging.FileHandler("/tmp/xiaobai.log"),
         ],
     )
+    # Structured JSON log (additive) — enables request_id tracing and span
+    # timing without disturbing the human-readable stderr/log output.
+    from .utils.logging import install_jsonl_handler
+    install_jsonl_handler("/tmp/xiaobai.jsonl")
     server = build_server()
     asyncio.run(server.run())
 
