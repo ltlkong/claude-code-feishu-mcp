@@ -605,6 +605,27 @@ class XiaobaiServer:
 
     # ── Media download (inbound) ─────────────────────────────────
 
+    async def _download_feishu_media_timed(
+        self,
+        content_json: str,
+        message_type: str,
+        message_id: str,
+        sender_alias: str,
+        payload: dict | None,
+    ) -> str:
+        """Span-wrapped media download; used by the concurrent-ingress path."""
+        async with span(
+            "media.download", message_type=message_type, message_id=message_id
+        ):
+            return await self._download_feishu_media(
+                content_json, message_type, message_id,
+                sender=sender_alias, payload=payload,
+            )
+
+    async def _process_post_content_timed(self, content_json: str, message_id: str) -> str:
+        async with span("post.process", message_id=message_id):
+            return await self._process_post_content(content_json, message_id)
+
     async def _download_feishu_media(
         self,
         content_json: str,
@@ -908,6 +929,28 @@ class XiaobaiServer:
         request_id: str,
     ) -> None:
 
+        # Kick off media download first so it runs concurrently with the
+        # bookkeeping below (heartbeat, parent fetch, profile injection).
+        # For a large file this turns sequential 2-10s into overlap with the
+        # ~10-50ms of sync/async meta work that would have blocked it.
+        message_type = meta.get("message_type", "")
+        payload = meta.pop("_payload", None)  # never leak to Claude's meta
+        media_task: asyncio.Task[str] | None = None
+        post_task: asyncio.Task[str] | None = None
+        if message_type in ("image", "audio", "file", "media"):
+            sender_alias = tools_profile.get_user_alias(user_id) or user_id
+            media_task = asyncio.create_task(
+                self._download_feishu_media_timed(
+                    content, message_type, message_id, sender_alias, payload,
+                ),
+                name=f"media-download-{request_id}",
+            )
+        elif message_type == "post":
+            post_task = asyncio.create_task(
+                self._process_post_content_timed(content, message_id),
+                name=f"post-process-{request_id}",
+            )
+
         # Auto-add to heartbeat watchlist with a meaningful label
         user_alias = tools_profile.get_user_alias(user_id) if user_id else ""
         auto_label = ""
@@ -926,20 +969,6 @@ class XiaobaiServer:
             parent_text = await self._fetch_parent_content(parent_id)
             if parent_text is not None:
                 meta["reply_to_content"] = parent_text
-
-        # Media / post enrichment
-        message_type = meta.get("message_type", "")
-        # Pop the listener-parsed payload so it never reaches Claude's meta.
-        payload = meta.pop("_payload", None)
-        if message_type in ("image", "audio", "file", "media"):
-            sender_alias = tools_profile.get_user_alias(user_id) or user_id
-            async with span("media.download", message_type=message_type, message_id=message_id):
-                content = await self._download_feishu_media(
-                    content, message_type, message_id, sender=sender_alias, payload=payload,
-                )
-        elif message_type == "post":
-            async with span("post.process", message_id=message_id):
-                content = await self._process_post_content(content, message_id)
 
         # Defer card creation — only made when Claude calls reply_card
         self.feishu.card_manager.register_pending(request_id, chat_id, message_id)
@@ -1001,6 +1030,13 @@ class XiaobaiServer:
         short_msg, short_req = self._register_short_ids(message_id, request_id)
         meta["message_id"] = short_msg
         meta["request_id"] = short_req
+
+        # Resolve concurrent media/post work now — Claude needs the final
+        # content string before we fire the notification.
+        if media_task is not None:
+            content = await media_task
+        elif post_task is not None:
+            content = await post_task
 
         await self._send_channel_notification(content, meta)
 
