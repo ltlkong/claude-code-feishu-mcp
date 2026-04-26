@@ -101,6 +101,7 @@ class FeishuChannel:
         elevenlabs_api_key: str = "",
         elevenlabs_voice_id: str = "",
         stale_card_timeout_minutes: int = 30,
+        cards_persist_path: Path | None = None,
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self._app_id = app_id
@@ -133,6 +134,7 @@ class FeishuChannel:
             token_provider=self._token,
             http=self._http,
             stale_timeout_minutes=stale_card_timeout_minutes,
+            persist_path=cards_persist_path,
         )
 
         # Listener (WebSocket + recovery loop). Callbacks are wired in start().

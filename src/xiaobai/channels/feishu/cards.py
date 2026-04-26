@@ -108,6 +108,7 @@ class CardManager:
         token_provider: TokenProvider[str],
         http: httpx.AsyncClient,
         stale_timeout_minutes: int = 30,
+        persist_path: Path | None = None,
     ) -> None:
         self._http = http
         self._token = token_provider
@@ -119,6 +120,90 @@ class CardManager:
         # request_id -> (chat_id, reply_to_message_id) — persists after
         # finalize, enabling auto-recovery if reply_card is called again.
         self._origins: dict[str, tuple[str, str]] = {}
+
+        # Cross-restart persistence so cards left mid-stream by a crashed bot
+        # can be finalized on the next boot (otherwise the Feishu client shows
+        # ☁️…… forever).
+        self._persist_path = persist_path
+        self._load()
+
+    # ── Cross-restart persistence ────────────────────────────────
+
+    def _load(self) -> None:
+        """Restore in-flight card state from disk (best-effort)."""
+        if not self._persist_path or not self._persist_path.is_file():
+            return
+        try:
+            data = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            for rid, info in (data.get("cards") or {}).items():
+                self._cards[rid] = CardState(
+                    chat_id=info["chat_id"],
+                    reply_to_message_id=info["reply_to_message_id"],
+                    message_id=info.get("message_id"),
+                    card_id=info.get("card_id"),
+                    sequence=int(info.get("sequence") or 0),
+                    created_at=float(info.get("created_at") or time.time()),
+                )
+            for rid, origin in (data.get("origins") or {}).items():
+                if isinstance(origin, list) and len(origin) == 2:
+                    self._origins[rid] = (origin[0], origin[1])
+            logger.info(
+                "CardManager loaded %d in-flight + %d origins from %s",
+                len(self._cards), len(self._origins), self._persist_path,
+            )
+        except Exception as e:
+            logger.warning("CardManager load failed: %s", e)
+
+    def _persist(self) -> None:
+        """Snapshot in-flight card state to disk (atomic write)."""
+        if not self._persist_path:
+            return
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "cards": {
+                    rid: {
+                        "chat_id": s.chat_id,
+                        "reply_to_message_id": s.reply_to_message_id,
+                        "message_id": s.message_id,
+                        "card_id": s.card_id,
+                        "sequence": s.sequence,
+                        "created_at": s.created_at,
+                    }
+                    for rid, s in self._cards.items()
+                },
+                "origins": {rid: list(o) for rid, o in self._origins.items()},
+            }
+            tmp = self._persist_path.with_suffix(self._persist_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self._persist_path)
+        except Exception as e:
+            logger.warning("CardManager persist failed: %s", e)
+
+    async def recover_in_flight(self) -> int:
+        """Finalize cards left in-flight from a previous run.
+
+        Called once at startup. Each card gets a polite '[recovered]' finalize
+        so the user sees a stable, non-spinning card instead of ☁️……
+        """
+        if not self._cards:
+            return 0
+        rids = list(self._cards.keys())
+        recovered = 0
+        for rid in rids:
+            try:
+                await self.finalize_card(
+                    rid,
+                    "*[Recovered after restart — original response was lost]*",
+                )
+                recovered += 1
+            except Exception as e:
+                logger.warning("recover_in_flight: failed to finalize %s: %s", rid, e)
+                self._cards.pop(rid, None)
+        self._persist()
+        if recovered:
+            logger.info("CardManager recovered %d stuck card(s) from previous run", recovered)
+        return recovered
 
     # ── Token error helpers ──────────────────────────────────────
 
@@ -370,6 +455,7 @@ class CardManager:
             reply_to_message_id="",
             message_id=message_id,
         )
+        self._persist()
         logger.info("adopt_card: request_id=%s message_id=%s", request_id, message_id)
 
     def register_pending(
@@ -378,11 +464,13 @@ class CardManager:
         """Register a pending card — created lazily when update/finalize fires."""
         self._pending[request_id] = (chat_id, reply_to_message_id)
         self._origins[request_id] = (chat_id, reply_to_message_id)
+        self._persist()
 
     def cancel_pending(self, request_id: str) -> None:
         """Cancel a pending card and clear its origin record."""
         self._pending.pop(request_id, None)
         self._origins.pop(request_id, None)
+        self._persist()
 
     async def _ensure_card(self, request_id: str) -> bool:
         """Ensure a card exists for ``request_id``.
@@ -425,6 +513,7 @@ class CardManager:
             message_id=message_id,
             card_id=card_id,
         )
+        self._persist()
 
     async def update_card(
         self,
@@ -451,11 +540,13 @@ class CardManager:
 
         if state.card_id:
             if await self._cardkit_replace(state.card_id, card_json, state.sequence):
+                self._persist()
                 return {"status": "ok"}
             logger.warning("update_card: CardKit replace failed, trying PATCH fallback")
 
         if state.message_id:
             if await self._patch_card(state.message_id, card_json):
+                self._persist()
                 return {"status": "ok"}
 
         return {"status": "error", "message": "Failed to update card"}
@@ -537,6 +628,7 @@ class CardManager:
         # Keep _origins — if reply_card is called again on this request_id,
         # _ensure_card will auto-create a fresh card. Swept by size-cap in
         # cleanup_stale_cards() below.
+        self._persist()
         if replaced:
             return {"status": "ok"}
         return {"status": "error", "message": "Failed to send final response"}
@@ -563,4 +655,5 @@ class CardManager:
             for k in keys:
                 self._origins.pop(k, None)
 
+        self._persist()
         return len(stale)

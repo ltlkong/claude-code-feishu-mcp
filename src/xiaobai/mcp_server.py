@@ -474,6 +474,7 @@ class XiaobaiServer:
             elevenlabs_api_key=self.settings.elevenlabs_api_key,
             elevenlabs_voice_id=self.settings.elevenlabs_voice_id,
             stale_card_timeout_minutes=self.settings.stale_card_timeout_minutes,
+            cards_persist_path=self.settings.state_dir / "feishu_cards_inflight.json",
         )
         try:
             self.wechat: WeChatChannel | None = WeChatChannel(
@@ -1476,6 +1477,16 @@ class XiaobaiServer:
         # can be delivered.
         for channel in self.registry:
             await channel.start(loop, self._ingress)
+
+        # Recover any cards left in-flight by a previous crashed run — without
+        # this, the Feishu client shows ☁️…… forever for cards whose body
+        # never landed (e.g. bot died mid-stream, MCP transport dropped).
+        try:
+            recovered = await self.feishu.card_manager.recover_in_flight()
+            if recovered:
+                logger.info("Startup recovery: finalized %d stuck card(s)", recovered)
+        except Exception as e:
+            logger.warning("Startup card recovery failed: %s", e)
 
         # Background tasks
         asyncio.create_task(self._periodic_cleanup())
