@@ -469,4 +469,58 @@ Three-Body Problem terminology fully absorbed into internet slang:
 
 ---
 
+## Session: 2026-04-25 (night, Vancouver — first cloakbrowser-enabled session)
+
+Browsed the explore feed logged in as Boss; clicked into 2 posts of different genres (lifestyle vlogger / fan-cam stan). Notes in /tmp/xhs_browse_log.md (snapshot copy below).
+
+### Title craft (n=15 cards top of feed)
+
+- **First-person, talk-to-friend voice** — never editorial. "我是太阳吗" / "要永远缠绕在一起" reads like a message to one person, not a headline
+- **Title carries the entire pitch** — 12-character titles are common; the click is bonus, not necessary. "区别对待这一块" / "我是太阳吗"
+- **`「」` quotes pull a single phrase from the post as hook** — "「让我意难平的男二里，你拔得头筹」" — promises "this is the line you'll remember"
+- **Buzzword syntax signals you're inside the meme** — 主打一个X / X这一块 / X的含金量 / 拔得头筹 / 全票MVP / 重发版 — borrowed from variety-show subtitle culture
+- **Emoji as punctuation/mood, not decoration** — ☀️ ends "变好的" → softens claim from "will" to "might-feel". 🥺🥺🥺 stacks for desperate-cute. ❤︎ unicode-not-emoji to feel hand-drawn
+- **Don't round numbers** — 5795 / 1076 / 197 reads more organic than "5K+". 重发版 in the title also signals organic ("not paid promo, I just had to repost")
+- **Sentence-length tags** — #喜欢每一个有阳光的日子 / #见人不如健身 — XHS norm, not single-keyword
+
+### Author engagement (lifestyle vlogger genre — 晓婷的快乐生活)
+
+- **Reply to EVERY comment, even tiny ones** — the unwritten rule. Broadcast-without-reply reads as cold/brand
+- **Replies are 1 line, specific (name something from the comment back), warm** — never templated
+- **哈哈哈 stack length encodes intensity** — 3 = warm-default acknowledge, 8+ = real delight, 1 = formal/cold
+- **Negative-feeling comment → open-ended question, not advice** — "可是我快乐不起来了" → "为什么呢" (4 chars, full presence). NOT "试试X" / "你应该Y"
+- **Brand drops are bare** — "打底uma wang 裙子lee mathews 鞋子chloe" — no marketing wrapper, no praise
+- **Recurring side-characters named consistently** — pet 可乐 (Cola) gets named in every video; viewers ID by name → parasocial intimacy
+- **IRL recognition is gold, never deflected** — "昨天中午在gaga看见你了" → "哈哈昨天中午吃的嘎嘎哈哈" (plays along, never "啊真巧" deny-defense)
+- **Idiomatic warmth signals you're a person not a brand** — "嘴巴抹蜂蜜啦" = grandma idiom for "你嘴真甜"
+
+### Stan/fan-cam genre — same platform, different rules (CC敲可爱 / 双高胎)
+
+- **Short reactions dominate** — "可爱" / "次子破防" / "好可爱的狗" — 2-4 chars typical
+- **Internal vocabulary is the price of admission** — 越子 / 次子破防 / 胡博 / 超越玩家 — outsiders can't decode → inside-the-club feel is the appeal
+- **The decoder-comment is celebrated** — long thoughtful read of a micro-detail ("熊心装置" wrote 50 chars analyzing a brother's gesture) gets community respect
+- **Status-in-handle as social proof** — "糕糕cake（被超超越越评论过版）" — bracketed achievement IN the username
+- **Question-as-wistful-marvel** — "老师是全勤吗？好幸福啊！" — combo question + 啊! = soft awe, not actually asking
+- **Author often DOESN'T reply on aggregator/fan posts** — viewers comment AT each other; community is the product, not the author's parasocial relationship
+
+### Cross-genre takeaway
+
+Author engagement style depends on the GENRE the post lives in:
+
+| Genre | Author replies? | Comment length | Tone |
+|---|---|---|---|
+| Lifestyle vlogger | every comment, 1 line + 哈哈哈 | medium, personal | warm reciprocal |
+| Stan/fan-cam | rarely | tiny + emoji | community-internal vocabulary |
+
+For me as Xiaobai: when I'm chatting in Boss's chats, the lifestyle-vlogger model fits — every message gets a 1-line specific reply with appropriate 哈哈哈 length. When I'm in a busy group, the stan model is more appropriate — 2-4 char reactions, don't insert myself unless I have something specific.
+
+### Actionable for HUMAN_BEHAVIOR / CLAUDE.md
+
+1. **Don't always solve** — when user shares pain, default to "怎么了 / 为什么呢" not "试试X / 你应该Y". Already in CLAUDE.md ("Sad→be present"); reinforced.
+2. **哈哈哈 length = intensity dial** — already used; document the calibration (3 default, 8+ for real delight)
+3. **Bare brand drops are fine** — when answering "where's that from" don't wrap with marketing language
+4. **IRL/factual recognition → play along, never deny** — even when surprised, the move is "哈对" not "啊真巧"
+
+---
+
 *This file is continuously updated through browsing sessions. Raw observations only — distilled rules go into CLAUDE.md.*

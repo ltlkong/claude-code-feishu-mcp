@@ -45,7 +45,6 @@ from .core.hooks import HookRunner
 from .providers.base import Provider, ProviderEvent
 from .providers.claude_mcp import ClaudeMcpProvider
 from .providers.cursor_cli import CursorCliProvider
-from .providers.gemini_cli import GeminiCliProvider
 from .tools import (
     cards as tools_cards,
     docs as tools_docs,
@@ -542,14 +541,6 @@ class XiaobaiServer:
         provider = self.settings.xiaobai_provider.lower().strip()
         if provider == "claude":
             return ClaudeMcpProvider(self._write_notification)
-        if provider == "gemini":
-            return GeminiCliProvider(
-                dispatch_tool=self._dispatch_provider_tool,
-                instructions=self.settings.load_instructions(),
-                command=self.settings.gemini_command,
-                args=shlex.split(self.settings.gemini_args),
-                timeout_seconds=self.settings.gemini_timeout_seconds,
-            )
         if provider == "cursor":
             return CursorCliProvider(
                 dispatch_tool=self._dispatch_provider_tool,
@@ -594,10 +585,19 @@ class XiaobaiServer:
         from mcp.shared.session import SessionMessage
         from mcp.types import JSONRPCMessage, JSONRPCNotification
 
+        # Claude Code's MCP client schema requires every meta value to be a
+        # string. Booleans / numbers / dicts crash the stdio transport with a
+        # ZodError and silently drop the connection. Coerce defensively here so
+        # adding a new typed meta field upstream can never crash the channel.
+        safe_meta = {
+            k: v if isinstance(v, str) else json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+            for k, v in meta.items()
+        }
+
         notification = JSONRPCNotification(
             jsonrpc="2.0",
             method="notifications/claude/channel",
-            params={"content": content, "meta": meta},
+            params={"content": content, "meta": safe_meta},
         )
         await self._write_stream.send(SessionMessage(JSONRPCMessage(notification)))
 
@@ -1075,14 +1075,10 @@ class XiaobaiServer:
                 meta["user_profile"] = f"(see earlier profile for {display})"
                 self._profile_inject_state[key] = (count + 1, last_time)
 
-            user_name = tools_profile.get_user_alias(user_id)
-            if user_name != user_id[:12]:
-                meta["user_id"] = user_name
-
-        # Replace chat_id with alias
-        alias = tools_profile.get_alias(chat_id)
-        if alias != chat_id[:12]:
-            meta["chat_id"] = alias
+        # Always pass raw oc_/ou_ ids to Claude — aliases were ambiguous
+        # (multiple chats colliding on the same alias label) and caused
+        # cross-room leaks. Claude looks up display names in
+        # workspace/state/relationships/ when needed.
 
         # Register short ids (#N, rN)
         short_msg, short_req = self._register_short_ids(message_id, request_id)
@@ -1114,7 +1110,7 @@ class XiaobaiServer:
             rkey = f"{chat_id}:{user_id}"
             bumped = self._profile_refresh_counter.get(rkey, 0) + 1
             if bumped >= PROFILE_REFRESH_INTERVAL:
-                meta["profile_refresh_due"] = True
+                meta["profile_refresh_due"] = "true"
                 self._profile_refresh_counter[rkey] = 0
             else:
                 self._profile_refresh_counter[rkey] = bumped

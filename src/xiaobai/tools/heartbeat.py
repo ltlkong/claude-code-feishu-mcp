@@ -354,15 +354,14 @@ async def heartbeat_loop(
 
             for i, chat_id in enumerate(inactive_ids):
                 label = inactive_labels[i]
-                alias = get_alias(chat_id)
                 content = (
-                    f"Heartbeat: check on {alias}\n"
+                    f"Heartbeat: check on {chat_id}\n"
                     "Follow HEARTBEAT.md checklist before deciding."
                 )
                 meta = {
                     "source": "heartbeat",
-                    "chat_id": alias,
-                    "suggestion": f"Check on {alias}",
+                    "chat_id": chat_id,
+                    "suggestion": f"Check on {chat_id}",
                 }
                 await notify_fn(content, meta)
                 logger.info("Heartbeat: nudged for %s", label)

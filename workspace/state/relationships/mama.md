@@ -2,7 +2,7 @@
 person_id: mama
 display_name: 妈妈
 real_name: 李慈欣
-relation: Boss 老婆
+relation: Boss 女朋友
 location: 福州
 timezone: CST (UTC+8)
 phone: "+8613075879457"

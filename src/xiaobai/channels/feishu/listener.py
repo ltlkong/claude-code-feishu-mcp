@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import logging
 import threading
 import time
@@ -77,13 +78,53 @@ if _original_handle:
 
 
 class _DedupCache:
-    """OrderedDict-based dedup with TTL. Thread-safe."""
+    """OrderedDict-based dedup with TTL. Persists to disk so restarts don't
+    cause the recovery loop to replay already-handled messages."""
 
-    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600):
+    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600,
+                 persist_path: "str | None" = None):
         self._cache: OrderedDict[str, float] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
+        self._persist_path = persist_path
+        self._load()
+
+    def _load(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            from pathlib import Path
+            p = Path(self._persist_path)
+            if not p.exists():
+                return
+            data = json.loads(p.read_text())
+            now = time.time()
+            for key, ts in data.items():
+                try:
+                    ts_f = float(ts)
+                except (ValueError, TypeError):
+                    continue
+                if now - ts_f > self._ttl:
+                    continue
+                self._cache[key] = ts_f
+        except Exception as e:
+            logger.warning("Could not load dedup cache from %s: %s",
+                           self._persist_path, e)
+
+    def _persist(self) -> None:
+        if not self._persist_path:
+            return
+        try:
+            from pathlib import Path
+            p = Path(self._persist_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(dict(self._cache)))
+            os.replace(tmp, p)
+        except Exception as e:
+            logger.warning("Could not persist dedup cache to %s: %s",
+                           self._persist_path, e)
 
     def seen(self, key: str) -> bool:
         """Return True if key was seen within TTL. Adds key if new."""
@@ -101,6 +142,7 @@ class _DedupCache:
             self._cache[key] = now
             if len(self._cache) > self._max_size:
                 self._cache.popitem(last=False)
+            self._persist()
             return False
 
 
@@ -227,7 +269,12 @@ class FeishuListener:
         self._allowed_user_ids = allowed_user_ids
         self._on_message = on_message
         self._on_card_action = on_card_action
-        self._dedup = _DedupCache()
+        from pathlib import Path
+        _dedup_path = (
+            Path(__file__).resolve().parents[4]
+            / "workspace" / "state" / "feishu_dedup.json"
+        )
+        self._dedup = _DedupCache(persist_path=str(_dedup_path))
         self._ws_client: lark.ws.Client | None = None
         self._token = token_provider
         self._http = http
@@ -393,6 +440,7 @@ class FeishuListener:
         self._loop = loop
         self._active_chats = {}
         self._last_ws_msg_time = {}
+        self._seed_active_chats_from_watchlist()
 
         handler = (
             lark.EventDispatcherHandler.builder("", "")
@@ -423,12 +471,34 @@ class FeishuListener:
 
     # ── Message recovery ─────────────────────────────────────────
 
+    def _seed_active_chats_from_watchlist(self) -> None:
+        """Seed _active_chats from heartbeat_watchlist.json so chats Boss
+        cares about get scanned even when no WS message has arrived yet
+        (e.g., after a restart while messages were already pending)."""
+        try:
+            from pathlib import Path
+
+            project_root = Path(__file__).resolve().parents[4]
+            watchlist_path = project_root / "workspace" / "state" / "heartbeat_watchlist.json"
+            if not watchlist_path.exists():
+                return
+            data = json.loads(watchlist_path.read_text())
+            now = time.time()
+            for chat_id in data.keys():
+                self._active_chats.setdefault(chat_id, now)
+        except Exception as e:
+            logger.warning("Could not seed active chats from watchlist: %s", e)
+
     async def _recover_missed_messages(self) -> None:
         """Check active chats for messages missed during WebSocket gaps.
 
         Only messages **newer** than the last WebSocket-received message in a
         chat are processed — everything else is assumed already delivered.
         """
+        # Re-seed every tick so watchlist chats survive 2h eviction and any
+        # additions to the watchlist take effect without restart.
+        self._seed_active_chats_from_watchlist()
+
         if not self._active_chats:
             return
 
@@ -443,10 +513,14 @@ class FeishuListener:
         for chat_id in list(self._active_chats):
             last_ws_time = self._last_ws_msg_time.get(chat_id)
             if not last_ws_time:
-                continue  # No baseline yet — skip until we've seen at least one WS message
+                # No baseline yet (cold start, watchlist seed, or gap > 2h
+                # eviction). Use a 1-hour lookback so we backfill recent gaps
+                # without replaying full history. Dedup cache prevents re-firing
+                # already-handled messages.
+                last_ws_time = int((time.time() - 3600) * 1000)
 
             token = await self._token.get()
-            messages = await pull_recent_messages(self._http, token, chat_id, count=5)
+            messages = await pull_recent_messages(self._http, token, chat_id, count=50)
             for msg in messages:
                 msg_id = msg.get("message_id", "")
                 if not msg_id:

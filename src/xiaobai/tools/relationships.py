@@ -322,12 +322,44 @@ def get_profile(person_id: str) -> str:
     return "\n".join(parts)
 
 
+def _state_path(person_id: str) -> Path:
+    return _REL_DIR / f"{person_id}_state.md"
+
+
+def get_state(person_id: str) -> str:
+    """Return the current relationship-state notes for this person, or empty.
+
+    The state file is separate from the facts profile — it captures the
+    *current vibe* between Xiaobai and this person (what we're chewing on,
+    what tone matched best last time, unresolved threads). Edited
+    opportunistically; cleared/rewritten as the relationship evolves.
+    """
+    path = _state_path(person_id)
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return ""
+    if len(text) > 600:
+        text = text[:600].rstrip() + "…"
+    return text
+
+
 def person_context_for(channel: str, user_id: str) -> str:
-    """Shortcut: resolve + render. Empty string if no person is linked."""
+    """Shortcut: resolve + render. Empty string if no person is linked.
+
+    Returns the facts profile, optionally followed by the relationship
+    state block when one exists.
+    """
     pid = resolve(channel, user_id)
     if not pid:
         return ""
-    return get_profile(pid)
+    profile = get_profile(pid)
+    state = get_state(pid)
+    if not state:
+        return profile
+    return f"{profile}\n\n## 当前关系状态\n{state}"
 
 
 # ── Debugging / introspection ─────────────────────────────────────

@@ -3,7 +3,7 @@
 PYTHON ?= .venv/bin/python
 
 claude:
-	claude --dangerously-load-development-channels server:channel --dangerously-skip-permissions --chrome --resume
+	claude --dangerously-load-development-channels server:channel --dangerously-skip-permissions --resume
 
 gemini:
 	XIAOBAI_PROVIDER=gemini $(PYTHON) -m xiaobai.mcp_server

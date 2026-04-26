@@ -14,7 +14,7 @@ Generate photorealistic or styled images through Codex CLI's built-in image tool
 - User asks for a 海报/宣传图/封面 with Chinese typography
 - User dislikes first result and wants a refined version (use resume, not fresh call)
 
-**Do NOT use for:** batch OCR (use `gemini --yolo`), video generation, pure photo retouching where ImageMagick suffices (see `image-edit` skill).
+**Do NOT use for:** batch OCR (read images directly or use a local OCR like `tesseract`), video generation, pure photo retouching where ImageMagick suffices (see `image-edit` skill).
 
 ## Workflow
 
@@ -25,7 +25,7 @@ Use `codex exec` with **gpt-5.4**, medium reasoning, full sandbox + network:
 ```bash
 codex exec --skip-git-repo-check \
   --sandbox danger-full-access --full-auto \
-  -m gpt-5.5 --config model_reasoning_effort="medium" \
+  -m gpt-5.4 --config model_reasoning_effort="medium" \
   "<PROMPT>" 2>/dev/null
 ```
 

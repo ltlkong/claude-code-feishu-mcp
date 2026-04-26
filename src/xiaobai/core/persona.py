@@ -129,7 +129,7 @@ def persona_signal(
     if hour is None:
         return {}
     return {
-        "user_local_hour": hour,
+        "user_local_hour": str(hour),
         "hour_bucket": hour_bucket(hour),
         "user_timezone": tz,
     }

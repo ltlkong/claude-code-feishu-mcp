@@ -41,3 +41,6 @@ profiles/
 
 # Temp files
 /tmp/
+
+# Codex CLI marker
+.codex
