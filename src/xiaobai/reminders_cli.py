@@ -253,7 +253,9 @@ def create_reminder(reminder_id: str, cron_expr: str, chat_id: str, message: str
     # Validate IDs to prevent shell injection
     if not re.match(r'^[a-zA-Z0-9_\-]+$', reminder_id):
         return {"status": "error", "message": f"Invalid reminder_id: {reminder_id}"}
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', chat_id):
+    # Allow Feishu IDs (oc_/ou_ + alphanumeric) AND WeChat IDs (alnum + @im.wechat).
+    # Still strict enough to block shell metacharacters.
+    if not re.match(r'^[a-zA-Z0-9_\-@.]+$', chat_id):
         return {"status": "error", "message": f"Invalid chat_id: {chat_id}"}
     safe_message = shlex.quote(message)
     subcmd = "trigger" if smart else "send"

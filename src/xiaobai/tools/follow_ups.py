@@ -4,12 +4,18 @@ Each ``add`` registers a smart cron reminder so the due-time fire is
 handled by the existing scheduled-task watcher. When the reminder fires,
 Claude receives a prompt instructing it to bring up the topic naturally
 (not as a scheduled digest — the prompt is explicit about that).
+
+Per-person notebook: when a follow-up has a ``person_id``, the manager
+also re-renders ``workspace/state/todos/{person_id}.md`` so Xiaobai (and
+Boss) can ``cat`` a single file to see all open + recent items for that
+person — relationships/ profiles + todos/ notebooks live in parallel.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ..core.follow_ups import (
     STATUS_CANCELLED,
@@ -29,10 +35,61 @@ from ..reminders_cli import (
 
 logger = logging.getLogger(__name__)
 
+_TODOS_DIR = (
+    Path(__file__).resolve().parents[3] / "workspace" / "state" / "todos"
+)
+
 
 def _cron_for(dt: datetime) -> str:
     """UTC cron expression that fires exactly once at ``dt`` (minute precision)."""
     return f"{dt.minute} {dt.hour} {dt.day} {dt.month} *"
+
+
+def _sync_person_todos(person_id: str) -> None:
+    """Re-render ``workspace/state/todos/{person_id}.md`` from all follow-ups for that person.
+
+    Idempotent. Pending items first (sorted by due_at), then completed/cancelled
+    history below for context. No-op when ``person_id`` is empty.
+    """
+    if not person_id:
+        return
+    try:
+        _TODOS_DIR.mkdir(parents=True, exist_ok=True)
+        pending = list_all(person_id=person_id, status=STATUS_PENDING)
+        done = list_all(person_id=person_id, status=STATUS_COMPLETED)
+        cancelled = list_all(person_id=person_id, status=STATUS_CANCELLED)
+
+        lines = [f"# Todos — {person_id}", ""]
+
+        if pending:
+            lines.append("## Pending")
+            lines.append("")
+            for f in pending:
+                lines.append(f"### {f.due_at} — {f.topic}")
+                lines.append(f"- id: `{f.id}`")
+                lines.append(f"- chat: `{f.chat_id}`")
+                if f.context:
+                    lines.append(f"- context: {f.context}")
+                lines.append("")
+
+        if done:
+            lines.append("## Completed (recent)")
+            lines.append("")
+            for f in sorted(done, key=lambda x: x.due_at or "", reverse=True)[:20]:
+                lines.append(f"- ✓ {f.due_at} — {f.topic}" + (f" — {f.note}" if f.note else ""))
+            lines.append("")
+
+        if cancelled:
+            lines.append("## Cancelled (recent)")
+            lines.append("")
+            for f in sorted(cancelled, key=lambda x: x.due_at or "", reverse=True)[:10]:
+                lines.append(f"- ✗ {f.due_at} — {f.topic}" + (f" — {f.note}" if f.note else ""))
+            lines.append("")
+
+        path = _TODOS_DIR / f"{person_id}.md"
+        path.write_text("\n".join(lines), encoding="utf-8")
+    except Exception as e:
+        logger.warning("todos notebook sync failed for %s: %s", person_id, e)
 
 
 def _smart_prompt(topic: str, context: str) -> str:
@@ -133,6 +190,7 @@ def _handle_add(
         }
 
     save(fu)
+    _sync_person_todos(person_id)
     return {
         "status": "ok",
         "follow_up_id": fu.id,
@@ -181,4 +239,5 @@ def _handle_close(follow_up_id: str, action: str, note: str) -> dict:
         except Exception as e:
             logger.debug("follow-up %s reminder cleanup skipped: %s", follow_up_id, e)
 
+    _sync_person_todos(fu.person_id)
     return {"status": "ok", "follow_up_id": fu.id, "new_status": new_status}
