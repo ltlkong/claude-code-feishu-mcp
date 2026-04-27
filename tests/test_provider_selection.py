@@ -4,7 +4,6 @@ from unittest.mock import patch
 from xiaobai.mcp_server import XiaobaiServer
 from xiaobai.providers.claude_mcp import ClaudeMcpProvider
 from xiaobai.providers.cursor_cli import CursorCliProvider
-from xiaobai.providers.gemini_cli import GeminiCliProvider
 
 
 class ProviderSelectionTests(unittest.TestCase):
@@ -18,20 +17,6 @@ class ProviderSelectionTests(unittest.TestCase):
         provider = server._build_provider()
 
         self.assertIsInstance(provider, ClaudeMcpProvider)
-
-    def test_build_provider_can_select_gemini(self):
-        server = XiaobaiServer.__new__(XiaobaiServer)
-        server.settings = type("Settings", (), {
-            "xiaobai_provider": "gemini",
-            "gemini_command": "gemini",
-            "gemini_args": "--yolo",
-            "gemini_timeout_seconds": 120,
-            "load_instructions": lambda self: "instructions",
-        })()
-
-        provider = server._build_provider()
-
-        self.assertIsInstance(provider, GeminiCliProvider)
 
     def test_build_provider_rejects_unknown_provider(self):
         server = XiaobaiServer.__new__(XiaobaiServer)

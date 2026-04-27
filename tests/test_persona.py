@@ -54,7 +54,8 @@ class PersonaSignalTests(unittest.TestCase):
         fixed_utc = datetime(2026, 4, 24, 16, 0, tzinfo=ZoneInfo("UTC"))
         sig = persona_signal(location="Vancouver", now=fixed_utc)
         # Vancouver is UTC-7 (PDT) in April; 16:00 UTC → 9:00 local
-        self.assertEqual(sig["user_local_hour"], 9)
+        # (cast to str — meta values are stringified for Zod validation)
+        self.assertEqual(sig["user_local_hour"], "9")
         self.assertEqual(sig["hour_bucket"], "morning")
         self.assertEqual(sig["user_timezone"], "America/Vancouver")
 
@@ -62,7 +63,7 @@ class PersonaSignalTests(unittest.TestCase):
         fixed_utc = datetime(2026, 4, 24, 18, 0, tzinfo=ZoneInfo("UTC"))
         sig = persona_signal(location="福州", now=fixed_utc)
         # UTC+8 → 02:00 local = deep_night
-        self.assertEqual(sig["user_local_hour"], 2)
+        self.assertEqual(sig["user_local_hour"], "2")
         self.assertEqual(sig["hour_bucket"], "deep_night")
 
     def test_unknown_location_returns_empty(self):
